@@ -1,0 +1,37 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials/
+
+# Logs and local runtime data
+*.log
+logs/
+tmp/
+temp/
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Common generated artifacts; refine after the stack is selected
+coverage/
+dist/
+build/
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.exe
+*.test
+
+# Optional local multi-agent coordination is never product source
+.agent-board/
