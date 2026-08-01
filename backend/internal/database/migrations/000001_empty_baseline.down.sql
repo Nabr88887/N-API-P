@@ -1,0 +1,1 @@
+-- Empty baseline rollback intentionally makes no schema change.

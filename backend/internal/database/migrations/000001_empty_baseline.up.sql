@@ -1,0 +1,1 @@
+-- Empty baseline established before any product schema migration.

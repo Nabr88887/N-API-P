@@ -26,12 +26,14 @@ coverage/
 dist/
 build/
 node_modules/
+backend/internal/web/static/build/
 .venv/
 venv/
 __pycache__/
 *.py[cod]
 *.exe
 *.test
+*.tsbuildinfo
 
 # Optional local multi-agent coordination is never product source
 .agent-board/
