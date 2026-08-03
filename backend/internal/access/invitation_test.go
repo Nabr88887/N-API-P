@@ -251,6 +251,26 @@ func TestActivationRejectsInvalidPasswordWithoutConsumingValue(t *testing.T) {
 	}
 }
 
+func TestActivationMapsPasswordInitializationFailureWithoutConsumingValue(t *testing.T) {
+	repository, activation, identityID := createPendingInvitation(t)
+	service := NewActivationService(repository, failingPasswordInitializer{}, NewActivationLimiter())
+	service.now = func() time.Time { return fixedNow }
+
+	err := service.Activate(context.Background(), ActivateInput{
+		AttemptSource: "source-a", Email: activation.Email, ActivationValue: activation.ActivationValue, NewPassword: "valid-password-placeholder",
+	})
+
+	if err != ErrPasswordInitializationFailed {
+		t.Fatalf("Activate() error = %v, want ErrPasswordInitializationFailed", err)
+	}
+	if repository.identities[identityID].Status != IdentityStatusPending {
+		t.Fatal("password initialization failure activated the identity")
+	}
+	if repository.codesByIdentity[identityID][0].UsedAt != nil {
+		t.Fatal("password initialization failure consumed the activation value")
+	}
+}
+
 func TestIdentityEmailChangePreservesImmutableIDAndOwnership(t *testing.T) {
 	repository, _, identityID := createPendingInvitation(t)
 	repository.ownedResources[identityID] = []string{"key-1", "usage-1", "audit-1"}
@@ -292,6 +312,12 @@ type rejectingPasswordInitializer struct{}
 
 func (rejectingPasswordInitializer) Initialize(string) (string, error) {
 	return "", ErrPasswordRejected
+}
+
+type failingPasswordInitializer struct{}
+
+func (failingPasswordInitializer) Initialize(string) (string, error) {
+	return "", errors.New("password hashing unavailable")
 }
 
 type memoryIdentity struct {
