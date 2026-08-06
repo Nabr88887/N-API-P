@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	if _, err := config.LoadFromEnvironment(); err != nil {
+	if _, _, err := config.LoadStartupFromEnvironment(); err != nil {
 		slog.Error("startup configuration rejected", "error", err)
 		os.Exit(1)
 	}

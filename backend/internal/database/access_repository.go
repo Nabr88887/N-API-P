@@ -140,11 +140,22 @@ INSERT INTO sessions (
 
 const insertSecurityEventSQL = `
 INSERT INTO security_events (
-    id, event_type, actor_identity_id, target_identity_id, target_audit_id,
+    id, event_type, actor_identity_id, target_identity_id, target_service_account_id, target_key_id, target_audit_id,
     request_id, outcome, reason, detail_code, occurred_at
 ) VALUES (
-    $1, $2, NULLIF($3, '')::uuid, NULLIF($4, '')::uuid, NULLIF($5, '')::uuid,
-    $6, $7, NULLIF($8, ''), NULLIF($9, ''), $10
+    $1, $2, NULLIF($3, '')::uuid, NULLIF($4, '')::uuid, NULLIF($5, '')::uuid, NULLIF($6, '')::uuid, NULLIF($7, '')::uuid,
+    $8, $9, NULLIF($10, ''), NULLIF($11, ''), $12
+)`
+
+// Lifecycle events use detail_code for the bounded non-secret key prefix.
+// Complete credentials and verification hashes never cross this boundary.
+const insertCredentialLifecycleEventSQL = `
+INSERT INTO security_events (
+    id, event_type, actor_identity_id, target_identity_id, target_service_account_id, target_key_id,
+    request_id, outcome, detail_code, occurred_at
+) VALUES (
+    gen_random_uuid(), $1, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid,
+    NULLIF($4, '')::uuid, NULLIF($5, '')::uuid, $6, $7, $8, $9
 )`
 
 const revokePortalSessionSQL = `
@@ -437,11 +448,24 @@ func (r *Repository) RotatePortalSession(ctx context.Context, rotation access.Po
 func (r *Repository) AppendSecurityEvent(ctx context.Context, event access.SecurityEvent) error {
 	_, err := r.db.ExecContext(ctx, insertSecurityEventSQL,
 		event.ID, event.EventType, event.ActorIdentityID, event.TargetIdentityID,
-		event.TargetAuditID, event.RequestID, event.Outcome, event.Reason,
-		event.DetailCode, event.OccurredAt,
+		event.TargetServiceAccountID, event.TargetKeyID, event.TargetAuditID,
+		event.RequestID, event.Outcome, event.Reason, event.DetailCode, event.OccurredAt,
 	)
 	if err != nil {
 		return fmt.Errorf("append security event: %w", err)
+	}
+	return nil
+}
+
+func appendCredentialLifecycleEvent(ctx context.Context, tx *sql.Tx, event access.CredentialLifecycleEvent) error {
+	if err := event.Validate(); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, insertCredentialLifecycleEventSQL,
+		event.Action, event.ActorIdentityID, event.TargetIdentityID, event.TargetServiceAccountID,
+		event.TargetKeyID, event.RequestID, event.Outcome, event.KeyPrefix, event.OccurredAt,
+	); err != nil {
+		return fmt.Errorf("append credential lifecycle event: %w", err)
 	}
 	return nil
 }

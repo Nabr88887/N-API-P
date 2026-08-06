@@ -39,8 +39,9 @@ const (
 type IdentityStatus string
 
 const (
-	IdentityStatusPending IdentityStatus = "pending"
-	IdentityStatusActive  IdentityStatus = "active"
+	IdentityStatusPending  IdentityStatus = "pending"
+	IdentityStatusActive   IdentityStatus = "active"
+	IdentityStatusDisabled IdentityStatus = "disabled"
 )
 
 type Actor struct {

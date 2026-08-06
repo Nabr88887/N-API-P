@@ -40,6 +40,8 @@ func TestAuditPolicySchemaRejectsUnsafeState(t *testing.T) {
 	expectRejected(t, db, `UPDATE model_allowlist SET price_version = $1, input_unit_price = $2 WHERE model_id = $3`, "v1", "0.001", "gpt-test")
 	expectRejected(t, db, `INSERT INTO usage_records (id, audit_id, request_id, key_id, owner_kind, identity_id, team_id, model_id, outcome, usage_reported, input_tokens, output_tokens, total_tokens, price_version, input_unit_price, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`, "85000000-0000-0000-0000-000000000002", fixture.auditID, fixture.requestID, fixture.keyID, "personal", fixture.identityID, fixture.teamID, "gpt-test", "success", true, 10, 20, 30, "v1", "0.001", fixture.now)
 	expectRejected(t, db, `UPDATE operational_state SET raw_retention_days = $1 WHERE id = $2`, 31, 1)
+	expectRejected(t, db, `UPDATE api_keys SET verification_hash = NULL WHERE id = $1`, fixture.keyID)
+	mustExec(t, db, `UPDATE api_keys SET status = 'revoked', revoked_at = $1, verification_hash = NULL WHERE id = $2`, fixture.now.Add(time.Hour), fixture.keyID)
 }
 
 func TestSecurityEventsAreAppendOnlyAndStartupFailsClosed(t *testing.T) {
@@ -101,7 +103,7 @@ func insertAuditPolicyFixture(t *testing.T, db *sql.DB) auditPolicyFixture {
 	mustExec(t, db, `INSERT INTO teams (id, name, status) VALUES ($1, $2, $3)`, fixture.teamID, "Audit", "active")
 	mustExec(t, db, `INSERT INTO identities (id, email, role, status) VALUES ($1, $2, $3, $4)`, fixture.identityID, "auditor@example.internal", "system_administrator", "active")
 	mustExec(t, db, `INSERT INTO memberships (identity_id, team_id) VALUES ($1, $2)`, fixture.identityID, fixture.teamID)
-	mustExec(t, db, `INSERT INTO api_keys (id, identity_id, kind, name, prefix, verification_hash, status) VALUES ($1, $2, $3, $4, $5, $6, $7)`, fixture.keyID, fixture.identityID, "personal", "audit-test", "nap_audit", []byte("hash-only"), "active")
+	mustExec(t, db, `INSERT INTO api_keys (id, identity_id, kind, name, prefix, verification_hash, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, fixture.keyID, fixture.identityID, "personal", "audit-test", "nap_audit", []byte("hash-only"), "active", fixture.now)
 	mustExec(t, db, `INSERT INTO model_allowlist (model_id, status, updated_by_identity_id) VALUES ($1, $2, $3)`, "gpt-test", "allowed", fixture.identityID)
 	mustExec(t, db, `INSERT INTO audit_records (id, request_id, key_id, owner_kind, identity_id, team_id, model_id, capture_status, outcome, observed_request_bytes, observed_response_bytes, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)`, fixture.auditID, fixture.requestID, fixture.keyID, "personal", fixture.identityID, fixture.teamID, "gpt-test", "pending", "pending", 128, 0, fixture.now)
 	return fixture

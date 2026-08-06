@@ -26,6 +26,7 @@ func TestPersonalKeyServiceCreatesHashOnlyOneTimeCredential(t *testing.T) {
 	issuance, err := service.Create(context.Background(), CreatePersonalKeyInput{
 		IdentityID: "20000000-0000-0000-0000-000000000001",
 		Name:       "  workstation  ",
+		RequestID:  "request-personal-create",
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -62,7 +63,16 @@ func TestPersonalKeyServiceCreatesHashOnlyOneTimeCredential(t *testing.T) {
 	if !bytes.Equal(record.VerificationHash, wantHash[:]) || strings.Contains(string(record.VerificationHash), secret) {
 		t.Fatal("repository did not receive hash-only verification material")
 	}
-
+	event, err := record.Lifecycle.ForKey(record.ID, record.Prefix)
+	if err != nil {
+		t.Fatalf("create lifecycle event error = %v", err)
+	}
+	if event.Action != CredentialLifecyclePersonalKeyCreated || event.ActorIdentityID != record.IdentityID ||
+		event.TargetIdentityID != record.IdentityID || event.TargetKeyID != record.ID ||
+		event.KeyPrefix != record.Prefix || event.RequestID != "request-personal-create" ||
+		event.Outcome != SecurityEventSuccess || !event.OccurredAt.Equal(personalKeyTestTime) {
+		t.Fatalf("create lifecycle event = %#v", event)
+	}
 }
 
 func TestPersonalKeyServiceRejectsInvalidNameAndPreservesRepositoryErrors(t *testing.T) {
@@ -111,11 +121,20 @@ func TestPersonalKeyServiceListsAndRevokesOnlyRequestedOwnerMetadata(t *testing.
 		t.Fatalf("listed metadata contains a secret-bearing field: %s", encoded)
 	}
 
-	if err := service.Revoke(context.Background(), RevokePersonalKeyInput{IdentityID: "identity-1", KeyID: "key-1"}); err != nil {
+	if err := service.Revoke(context.Background(), RevokePersonalKeyInput{IdentityID: "identity-1", KeyID: "key-1", RequestID: "request-personal-revoke"}); err != nil {
 		t.Fatalf("Revoke() error = %v", err)
 	}
 	if repository.revoked.IdentityID != "identity-1" || repository.revoked.KeyID != "key-1" || !repository.revoked.RevokedAt.Equal(personalKeyTestTime) {
 		t.Fatalf("repository revocation = %#v", repository.revoked)
+	}
+	event, err := repository.revoked.Lifecycle.ForKey(repository.revoked.KeyID, "nap_prefix01")
+	if err != nil {
+		t.Fatalf("revoke lifecycle event error = %v", err)
+	}
+	if event.Action != CredentialLifecyclePersonalKeyRevoked || event.ActorIdentityID != "identity-1" ||
+		event.TargetIdentityID != "identity-1" || event.RequestID != "request-personal-revoke" ||
+		!event.OccurredAt.Equal(personalKeyTestTime) {
+		t.Fatalf("revoke lifecycle event = %#v", event)
 	}
 }
 

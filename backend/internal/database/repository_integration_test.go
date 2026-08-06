@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"n-api-p/internal/audit"
 	"testing"
 	"time"
 )
@@ -79,25 +80,26 @@ func TestRepositoryCreatePendingAuditRollsBackOnRawContentFailure(t *testing.T) 
 
 	auditID := "84000000-0000-0000-0000-000000000010"
 	requestID := "87000000-0000-0000-0000-000000000010"
-	identityID := fixture.identityID
-	input := CreatePendingAuditInput{
+	input := audit.PendingAudit{
 		ID:                   auditID,
 		RequestID:            requestID,
 		KeyID:                fixture.keyID,
-		OwnerKind:            "personal",
-		IdentityID:           &identityID,
+		OwnerKind:            audit.OwnerKindPersonal,
+		IdentityID:           fixture.identityID,
 		TeamID:               fixture.teamID,
 		ModelID:              "gpt-test",
+		CaptureStatus:        audit.CaptureStatusPending,
+		Outcome:              audit.AuditOutcomePending,
 		ObservedRequestBytes: 128,
 		CreatedAt:            fixture.now,
-		RequestContent: EncryptedRawContent{
+		ExpiresAt:            fixture.now.Add(24 * time.Hour),
+		RequestContent: audit.EncryptedContent{
 			Compression:    "gzip",
 			Ciphertext:     []byte("too-short"),
 			CipherNonce:    make([]byte, 12),
 			WrappedDataKey: []byte("wrapped-data-key-and-tag"),
 			WrapNonce:      make([]byte, 12),
 			KeyVersion:     1,
-			ExpiresAt:      fixture.now.Add(24 * time.Hour),
 		},
 	}
 
@@ -113,6 +115,74 @@ func TestRepositoryCreatePendingAuditRollsBackOnRawContentFailure(t *testing.T) 
 	}
 	assertRowCount(t, db, "audit_records", auditID, 1)
 	assertRowCount(t, db, "audit_raw_content", auditID, 1)
+}
+
+func TestRepositoryFinalizeAuditCommitsResponseAndMetadataAtomically(t *testing.T) {
+	db, _ := migrateRepositorySchema(t)
+	fixture := insertAuditPolicyFixture(t, db)
+	insertRequestRawContent(t, db, fixture)
+	repository := NewRepository(db)
+	completedAt := fixture.now.Add(time.Minute)
+	status := 200
+
+	if err := repository.FinalizeAudit(context.Background(), audit.FinalAudit{
+		ID: fixture.auditID, RequestID: fixture.requestID, OwnerKind: audit.OwnerKindPersonal,
+		IdentityID: fixture.identityID, TeamID: fixture.teamID, ModelID: "gpt-test",
+		CaptureStatus: audit.CaptureStatusComplete, Outcome: audit.AuditOutcomeSuccess,
+		UpstreamRequestID: "upstream-1", UpstreamHTTPStatus: &status, FinishReason: "stop",
+		ObservedResponseBytes: 64, CompletedAt: completedAt,
+		ResponseContent: validEncryptedContent(),
+	}); err != nil {
+		t.Fatalf("FinalizeAudit() error = %v", err)
+	}
+
+	var captureStatus, outcome string
+	if err := db.QueryRow(`SELECT capture_status, outcome FROM audit_records WHERE id = $1`, fixture.auditID).Scan(&captureStatus, &outcome); err != nil {
+		t.Fatalf("read finalized audit metadata: %v", err)
+	}
+	if captureStatus != "complete" || outcome != "success" {
+		t.Fatalf("final metadata = (%q, %q), want (complete, success)", captureStatus, outcome)
+	}
+	assertContentKindCount(t, db, fixture.auditID, "response", 1)
+}
+
+func TestRepositoryFinalizeAuditRejectsNonPendingAndRollsBackResponseFailure(t *testing.T) {
+	db, _ := migrateRepositorySchema(t)
+	fixture := insertAuditPolicyFixture(t, db)
+	insertRequestRawContent(t, db, fixture)
+	repository := NewRepository(db)
+	invalidContent := validEncryptedContent()
+	invalidContent.Ciphertext = []byte("too-short")
+
+	if err := repository.FinalizeAudit(context.Background(), audit.FinalAudit{
+		ID: fixture.auditID, RequestID: fixture.requestID, CaptureStatus: audit.CaptureStatusComplete,
+		Outcome: audit.AuditOutcomeSuccess, ObservedResponseBytes: 8, CompletedAt: fixture.now.Add(time.Minute),
+		ResponseContent: invalidContent,
+	}); err == nil {
+		t.Fatal("FinalizeAudit() accepted invalid response content")
+	}
+	var captureStatus, outcome string
+	if err := db.QueryRow(`SELECT capture_status, outcome FROM audit_records WHERE id = $1`, fixture.auditID).Scan(&captureStatus, &outcome); err != nil {
+		t.Fatalf("read rolled-back audit metadata: %v", err)
+	}
+	if captureStatus != "pending" || outcome != "pending" {
+		t.Fatalf("rolled-back metadata = (%q, %q), want pending/pending", captureStatus, outcome)
+	}
+	assertContentKindCount(t, db, fixture.auditID, "response", 0)
+
+	if err := repository.FinalizeAudit(context.Background(), audit.FinalAudit{
+		ID: fixture.auditID, RequestID: fixture.requestID, CaptureStatus: audit.CaptureStatusIncomplete,
+		Outcome: audit.AuditOutcomeCancelled, ObservedResponseBytes: 0, CompletedAt: fixture.now.Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("FinalizeAudit() cancellation error = %v", err)
+	}
+	if err := repository.FinalizeAudit(context.Background(), audit.FinalAudit{
+		ID: fixture.auditID, RequestID: fixture.requestID, CaptureStatus: audit.CaptureStatusComplete,
+		Outcome: audit.AuditOutcomeSuccess, ObservedResponseBytes: 8, CompletedAt: fixture.now.Add(2 * time.Minute),
+		ResponseContent: validEncryptedContent(),
+	}); !errors.Is(err, audit.ErrAuditNotPending) {
+		t.Fatalf("FinalizeAudit() second transition error = %v, want ErrAuditNotPending", err)
+	}
 }
 
 func insertPendingAudit(t *testing.T, db *sql.DB, auditID, requestID string, fixture auditPolicyFixture, createdAt time.Time) {
@@ -150,5 +220,28 @@ func assertRowCount(t *testing.T, db *sql.DB, tableName string, value any, want 
 	}
 	if got != want {
 		t.Fatalf("%s row count = %d, want %d", tableName, got, want)
+	}
+}
+
+func insertRequestRawContent(t *testing.T, db *sql.DB, fixture auditPolicyFixture) {
+	t.Helper()
+	mustExec(t, db, `INSERT INTO audit_raw_content (audit_id, content_kind, compression, ciphertext, cipher_nonce, wrapped_data_key, wrap_nonce, key_version, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`, fixture.auditID, "request", "gzip", []byte("encrypted-request-payload-and-tag"), make([]byte, 12), []byte("wrapped-data-key-and-tag"), make([]byte, 12), 1, fixture.now, fixture.now.Add(24*time.Hour))
+}
+
+func validEncryptedContent() *audit.EncryptedContent {
+	return &audit.EncryptedContent{
+		Compression: "gzip", Ciphertext: []byte("encrypted-response-payload-and-tag"), CipherNonce: make([]byte, 12),
+		WrappedDataKey: []byte("wrapped-response-key-and-tag"), WrapNonce: make([]byte, 12), KeyVersion: 1,
+	}
+}
+
+func assertContentKindCount(t *testing.T, db *sql.DB, auditID, contentKind string, want int) {
+	t.Helper()
+	var got int
+	if err := db.QueryRow(`SELECT count(*) FROM audit_raw_content WHERE audit_id = $1 AND content_kind = $2`, auditID, contentKind).Scan(&got); err != nil {
+		t.Fatalf("count %s raw content: %v", contentKind, err)
+	}
+	if got != want {
+		t.Fatalf("%s raw content count = %d, want %d", contentKind, got, want)
 	}
 }

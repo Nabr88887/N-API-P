@@ -60,7 +60,8 @@ SET status = 'revoked',
 WHERE id = $2
   AND identity_id = $3
   AND kind = 'personal'
-  AND status = 'active'`
+  AND status = 'active'
+RETURNING id::text, prefix`
 
 const findPersonalKeyCandidatesSQL = `
 SELECT
@@ -118,6 +119,13 @@ func (r *Repository) CreatePersonalKey(ctx context.Context, record access.Person
 			}
 			return fmt.Errorf("insert personal key: %w", err)
 		}
+		event, err := record.Lifecycle.ForKey(record.ID, record.Prefix)
+		if err != nil {
+			return err
+		}
+		if err := appendCredentialLifecycleEvent(ctx, tx, event); err != nil {
+			return err
+		}
 		return nil
 	})
 }
@@ -162,18 +170,21 @@ func (r *Repository) ListPersonalKeys(ctx context.Context, identityID string) (k
 }
 
 func (r *Repository) RevokePersonalKey(ctx context.Context, revocation access.PersonalKeyRevocation) error {
-	result, err := r.db.ExecContext(ctx, revokePersonalKeySQL, revocation.RevokedAt, revocation.KeyID, revocation.IdentityID)
-	if err != nil {
-		return fmt.Errorf("revoke personal key: %w", err)
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("count revoked personal keys: %w", err)
-	}
-	if affected != 1 {
-		return access.ErrPersonalKeyNotFound
-	}
-	return nil
+	return r.withTransaction(ctx, "revoke personal key", func(tx *sql.Tx) error {
+		var keyID, prefix string
+		err := tx.QueryRowContext(ctx, revokePersonalKeySQL, revocation.RevokedAt, revocation.KeyID, revocation.IdentityID).Scan(&keyID, &prefix)
+		if errors.Is(err, sql.ErrNoRows) {
+			return access.ErrPersonalKeyNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("revoke personal key: %w", err)
+		}
+		event, err := revocation.Lifecycle.ForKey(keyID, prefix)
+		if err != nil {
+			return err
+		}
+		return appendCredentialLifecycleEvent(ctx, tx, event)
+	})
 }
 
 func (r *Repository) FindPersonalKeyCandidates(ctx context.Context, prefix string) (candidates []access.PersonalKeyAuthenticationCandidate, err error) {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 )
@@ -44,11 +46,13 @@ type PersonalKeyIssuance struct {
 type CreatePersonalKeyInput struct {
 	IdentityID string
 	Name       string
+	RequestID  string
 }
 
 type RevokePersonalKeyInput struct {
 	IdentityID string
 	KeyID      string
+	RequestID  string
 }
 
 // PersonalKeyRecord contains only irreversible verification material and
@@ -58,20 +62,58 @@ type PersonalKeyRecord struct {
 	IdentityID       string
 	Name             string
 	Prefix           string
-	VerificationHash []byte
+	VerificationHash []byte `json:"-"`
 	CreatedAt        time.Time
+	Lifecycle        CredentialLifecycleContext
 }
 
 type PersonalKeyRevocation struct {
 	IdentityID string
 	KeyID      string
 	RevokedAt  time.Time
+	Lifecycle  CredentialLifecycleContext
 }
 
 type PersonalKeyAuthenticationCandidate struct {
 	KeyID            string
 	IdentityID       string
-	VerificationHash []byte
+	VerificationHash []byte `json:"-"`
+}
+
+func (record PersonalKeyRecord) String() string {
+	return fmt.Sprintf(
+		"PersonalKeyRecord{id=%s identity=%s name=%s prefix=%s created_at=%s}",
+		record.ID, record.IdentityID, record.Name, record.Prefix, record.CreatedAt.Format(time.RFC3339Nano),
+	)
+}
+
+func (record PersonalKeyRecord) GoString() string {
+	return record.String()
+}
+
+func (record PersonalKeyRecord) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("id", record.ID),
+		slog.String("identity_id", record.IdentityID),
+		slog.String("name", record.Name),
+		slog.String("prefix", record.Prefix),
+		slog.Time("created_at", record.CreatedAt),
+	)
+}
+
+func (candidate PersonalKeyAuthenticationCandidate) String() string {
+	return fmt.Sprintf("PersonalKeyAuthenticationCandidate{key_id=%s identity_id=%s}", candidate.KeyID, candidate.IdentityID)
+}
+
+func (candidate PersonalKeyAuthenticationCandidate) GoString() string {
+	return candidate.String()
+}
+
+func (candidate PersonalKeyAuthenticationCandidate) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("key_id", candidate.KeyID),
+		slog.String("identity_id", candidate.IdentityID),
+	)
 }
 
 type PersonalKeyUse struct {
@@ -117,6 +159,13 @@ func (service *PersonalKeyService) Create(ctx context.Context, input CreatePerso
 	if name == "" {
 		return PersonalKeyIssuance{}, ErrInvalidPersonalKeyName
 	}
+	createdAt := service.now().UTC()
+	lifecycle, err := newCredentialLifecycleContext(
+		CredentialLifecyclePersonalKeyCreated, identityID, identityID, "", input.RequestID, createdAt,
+	)
+	if err != nil {
+		return PersonalKeyIssuance{}, err
+	}
 
 	id, err := service.newID()
 	if err != nil {
@@ -126,7 +175,6 @@ func (service *PersonalKeyService) Create(ctx context.Context, input CreatePerso
 	if err != nil {
 		return PersonalKeyIssuance{}, err
 	}
-	createdAt := service.now().UTC()
 	record := PersonalKeyRecord{
 		ID:               id,
 		IdentityID:       identityID,
@@ -134,6 +182,7 @@ func (service *PersonalKeyService) Create(ctx context.Context, input CreatePerso
 		Prefix:           credential.Prefix(),
 		VerificationHash: credential.VerificationHash(),
 		CreatedAt:        createdAt,
+		Lifecycle:        lifecycle,
 	}
 	if err := service.repository.CreatePersonalKey(ctx, record); err != nil {
 		credential.Reveal()
@@ -163,10 +212,18 @@ func (service *PersonalKeyService) Revoke(ctx context.Context, input RevokePerso
 	if service == nil || service.repository == nil || identityID == "" || keyID == "" {
 		return ErrPersonalKeyNotFound
 	}
+	revokedAt := service.now().UTC()
+	lifecycle, err := newCredentialLifecycleContext(
+		CredentialLifecyclePersonalKeyRevoked, identityID, identityID, "", input.RequestID, revokedAt,
+	)
+	if err != nil {
+		return err
+	}
 	return service.repository.RevokePersonalKey(ctx, PersonalKeyRevocation{
 		IdentityID: identityID,
 		KeyID:      keyID,
-		RevokedAt:  service.now().UTC(),
+		RevokedAt:  revokedAt,
+		Lifecycle:  lifecycle,
 	})
 }
 

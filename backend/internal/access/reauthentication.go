@@ -184,16 +184,18 @@ const (
 )
 
 type SecurityEvent struct {
-	ID               string
-	EventType        string
-	ActorIdentityID  string
-	TargetIdentityID string
-	TargetAuditID    string
-	RequestID        string
-	Outcome          SecurityEventOutcome
-	Reason           string
-	DetailCode       string
-	OccurredAt       time.Time
+	ID                     string
+	EventType              string
+	ActorIdentityID        string
+	TargetIdentityID       string
+	TargetServiceAccountID string
+	TargetKeyID            string
+	TargetAuditID          string
+	RequestID              string
+	Outcome                SecurityEventOutcome
+	Reason                 string
+	DetailCode             string
+	OccurredAt             time.Time
 }
 
 type SecurityEventWriter interface {
@@ -207,6 +209,12 @@ type SensitiveActionRequest struct {
 	TargetAuditID    string
 	RequestID        string
 	Reason           string
+}
+
+type SensitiveActionExecution struct {
+	TargetAuditID string
+	Outcome       SecurityEventOutcome
+	DetailCode    string
 }
 
 type SensitiveActionGuard struct {
@@ -224,8 +232,67 @@ func (guard *SensitiveActionGuard) Authorize(ctx context.Context, request Sensit
 }
 
 func (guard *SensitiveActionGuard) AuthorizeAt(ctx context.Context, request SensitiveActionRequest, now time.Time) error {
-	if guard.events == nil {
+	event, result, err := guard.authorizationEvent(request, now)
+	if err != nil {
+		return err
+	}
+	if err := guard.events.AppendSecurityEvent(ctx, event); err != nil {
 		return ErrSecurityAuditUnavailable
+	}
+	return result
+}
+
+// ExecuteAt authorizes a sensitive action, executes it without an early
+// success event, and persists the final outcome before returning success.
+func (guard *SensitiveActionGuard) ExecuteAt(
+	ctx context.Context,
+	request SensitiveActionRequest,
+	now time.Time,
+	execute func() (SensitiveActionExecution, error),
+) error {
+	event, authorizationErr, err := guard.authorizationEvent(request, now)
+	if err != nil {
+		return err
+	}
+	if authorizationErr != nil {
+		if err := guard.events.AppendSecurityEvent(ctx, event); err != nil {
+			return ErrSecurityAuditUnavailable
+		}
+		return authorizationErr
+	}
+	if execute == nil {
+		event.Outcome = SecurityEventFailure
+		event.DetailCode = "operation_invalid"
+		if err := guard.events.AppendSecurityEvent(ctx, event); err != nil {
+			return ErrSecurityAuditUnavailable
+		}
+		return ErrSensitiveActionForbidden
+	}
+
+	execution, executionErr := execute()
+	if execution.DetailCode == "" {
+		execution.DetailCode = "operation_failed"
+	}
+	if executionErr == nil {
+		if execution.Outcome != SecurityEventSuccess {
+			execution.Outcome = SecurityEventFailure
+			executionErr = ErrSensitiveActionForbidden
+		}
+	} else if execution.Outcome != SecurityEventDenied && execution.Outcome != SecurityEventFailure {
+		execution.Outcome = SecurityEventFailure
+	}
+	event.TargetAuditID = execution.TargetAuditID
+	event.Outcome = execution.Outcome
+	event.DetailCode = execution.DetailCode
+	if err := guard.events.AppendSecurityEvent(ctx, event); err != nil {
+		return ErrSecurityAuditUnavailable
+	}
+	return executionErr
+}
+
+func (guard *SensitiveActionGuard) authorizationEvent(request SensitiveActionRequest, now time.Time) (SecurityEvent, error, error) {
+	if guard.events == nil {
+		return SecurityEvent{}, nil, ErrSecurityAuditUnavailable
 	}
 	newID := guard.newID
 	if newID == nil {
@@ -233,7 +300,7 @@ func (guard *SensitiveActionGuard) AuthorizeAt(ctx context.Context, request Sens
 	}
 	eventID, err := newID()
 	if err != nil {
-		return ErrSecurityAuditUnavailable
+		return SecurityEvent{}, nil, ErrSecurityAuditUnavailable
 	}
 	detailCode := "authorized"
 	result := error(nil)
@@ -253,10 +320,7 @@ func (guard *SensitiveActionGuard) AuthorizeAt(ctx context.Context, request Sens
 		TargetIdentityID: request.TargetIdentityID, TargetAuditID: request.TargetAuditID, RequestID: request.RequestID,
 		Outcome: outcome, Reason: request.Reason, DetailCode: detailCode, OccurredAt: now,
 	}
-	if err := guard.events.AppendSecurityEvent(ctx, event); err != nil {
-		return ErrSecurityAuditUnavailable
-	}
-	return result
+	return event, result, nil
 }
 
 func knownSensitiveAction(action SensitiveAction) bool {

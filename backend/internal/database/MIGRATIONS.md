@@ -67,3 +67,17 @@ metadata backup/restore, credential invalidation, and recovery-time drill remain
 deployment-stage acceptance work under their own approval gates. Until that
 artifact exists, reports must not describe the contract probes as an image or
 backup-restore rehearsal.
+
+## 000005 Lifecycle Maintenance
+
+Migration `000005_lifecycle_maintenance` makes `api_keys.verification_hash`
+nullable only when the key is already revoked. Active keys still require a
+non-empty hash, while revoked key ID, prefix, ownership, status, and timestamps
+remain available after lifecycle cleanup removes verification material.
+
+The migration is forward compatible with frozen version-2 workforce and
+version-3 audit consumers: existing inserts remain valid, active-key reads keep
+their non-null contract, and neither consumer selects revoked verification
+hashes. There is no destructive down migration because purged hashes cannot be
+reconstructed. Disposable test schemas are reset as a unit; deployed rollback
+uses a prior compatible application image or a new forward repair migration.

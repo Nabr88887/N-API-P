@@ -26,6 +26,10 @@ func TestPriorImageContractsRemainCompatibleAcrossAdditiveMigrations(t *testing.
 	migrateCompatibilityStage(t, migrator, 4)
 	probePriorImageV2Workforce(t, db, workforce)
 	probePriorImageV3Audit(t, db, audit)
+
+	migrateCompatibilityStage(t, migrator, 5)
+	probePriorImageV2Workforce(t, db, workforce)
+	probePriorImageV3Audit(t, db, audit)
 }
 
 type priorImageV2WorkforceFixture struct {

@@ -122,6 +122,98 @@ func TestSensitiveActionGuardRejectsStaleGrantAndAuditFailure(t *testing.T) {
 	}
 }
 
+func TestSensitiveActionGuardExecutesBeforeAuditingFinalOutcome(t *testing.T) {
+	events := &memorySecurityEventWriter{}
+	guard := NewSensitiveActionGuard(events)
+	grantUntil := fixedNow.Add(time.Minute)
+	request := SensitiveActionRequest{
+		Session: ActivePortalSession{
+			SessionID: "session-1", IdentityID: "admin-1", Role: RoleSystemAdministrator,
+			ReauthenticatedUntil: &grantUntil,
+		},
+		Action: SensitiveActionRawView, RequestID: "request-1", Reason: "investigation",
+	}
+	executed := false
+	err := guard.ExecuteAt(context.Background(), request, fixedNow, func() (SensitiveActionExecution, error) {
+		if len(events.events) != 0 {
+			t.Fatal("success event was appended before the sensitive operation completed")
+		}
+		executed = true
+		return SensitiveActionExecution{
+			TargetAuditID: "audit-1", Outcome: SecurityEventSuccess, DetailCode: "raw_viewed",
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("ExecuteAt() error = %v", err)
+	}
+	if !executed || len(events.events) != 1 {
+		t.Fatalf("execution/events = (%v, %d), want (true, 1)", executed, len(events.events))
+	}
+	event := events.events[0]
+	if event.Outcome != SecurityEventSuccess || event.DetailCode != "raw_viewed" || event.TargetAuditID != "audit-1" || event.Reason != "investigation" {
+		t.Fatalf("success event = %+v", event)
+	}
+
+	operationErr := errors.New("authenticated decryption failed")
+	err = guard.ExecuteAt(context.Background(), request, fixedNow, func() (SensitiveActionExecution, error) {
+		return SensitiveActionExecution{
+			TargetAuditID: "audit-1", Outcome: SecurityEventFailure, DetailCode: "decryption_failed",
+		}, operationErr
+	})
+	if !errors.Is(err, operationErr) {
+		t.Fatalf("failed ExecuteAt() error = %v, want operation error", err)
+	}
+	event = events.events[1]
+	if event.Outcome != SecurityEventFailure || event.DetailCode != "decryption_failed" || event.TargetAuditID != "audit-1" {
+		t.Fatalf("failure event = %+v", event)
+	}
+}
+
+func TestSensitiveActionGuardDoesNotExecuteDeniedOperation(t *testing.T) {
+	events := &memorySecurityEventWriter{}
+	guard := NewSensitiveActionGuard(events)
+	executed := false
+	err := guard.ExecuteAt(context.Background(), SensitiveActionRequest{
+		Session: ActivePortalSession{IdentityID: "employee-1", Role: RoleEmployee},
+		Action:  SensitiveActionRawView, RequestID: "request-1",
+	}, fixedNow, func() (SensitiveActionExecution, error) {
+		executed = true
+		return SensitiveActionExecution{}, nil
+	})
+	if !errors.Is(err, ErrSensitiveActionForbidden) {
+		t.Fatalf("ExecuteAt() error = %v, want ErrSensitiveActionForbidden", err)
+	}
+	if executed || len(events.events) != 1 || events.events[0].Outcome != SecurityEventDenied {
+		t.Fatalf("denied execution/events = (%v, %+v)", executed, events.events)
+	}
+}
+
+func TestSensitiveActionGuardAuditsInvalidExecutionBoundary(t *testing.T) {
+	events := &memorySecurityEventWriter{}
+	guard := NewSensitiveActionGuard(events)
+	grantUntil := fixedNow.Add(time.Minute)
+	request := SensitiveActionRequest{
+		Session: ActivePortalSession{IdentityID: "admin-1", Role: RoleSystemAdministrator, ReauthenticatedUntil: &grantUntil},
+		Action:  SensitiveActionRawView, RequestID: "request-invalid",
+	}
+	if err := guard.ExecuteAt(context.Background(), request, fixedNow, nil); !errors.Is(err, ErrSensitiveActionForbidden) {
+		t.Fatalf("nil execution error = %v, want ErrSensitiveActionForbidden", err)
+	}
+	if len(events.events) != 1 || events.events[0].Outcome != SecurityEventFailure || events.events[0].DetailCode != "operation_invalid" {
+		t.Fatalf("invalid execution event = %+v", events.events)
+	}
+
+	events.events = nil
+	if err := guard.ExecuteAt(context.Background(), request, fixedNow, func() (SensitiveActionExecution, error) {
+		return SensitiveActionExecution{}, nil
+	}); !errors.Is(err, ErrSensitiveActionForbidden) {
+		t.Fatalf("invalid outcome error = %v, want ErrSensitiveActionForbidden", err)
+	}
+	if len(events.events) != 1 || events.events[0].Outcome != SecurityEventFailure || events.events[0].DetailCode != "operation_failed" {
+		t.Fatalf("invalid outcome event = %+v", events.events)
+	}
+}
+
 type memoryReauthenticationRepository struct {
 	candidate ReauthenticationCandidate
 	err       error

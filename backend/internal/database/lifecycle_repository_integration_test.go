@@ -1,0 +1,192 @@
+//go:build integration
+
+package database
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"n-api-p/internal/audit"
+	"sync"
+	"testing"
+	"time"
+)
+
+func TestRepositoryRawContentIsInvisibleAtExpiryDuringCleanupRace(t *testing.T) {
+	db, _ := migrateRepositorySchema(t)
+	fixture := insertAuditPolicyFixture(t, db)
+	repository := NewRepository(db)
+	expiresAt := fixture.now.Add(time.Hour)
+	insertRawRetentionContent(t, db, fixture.auditID, fixture.now, expiresAt)
+
+	record, err := repository.ReadRawContent(context.Background(), audit.RawContentLookup{
+		AuditID: fixture.auditID, ContentKind: audit.ContentKindRequest, VisibleAt: expiresAt.Add(-time.Nanosecond),
+	})
+	if err != nil {
+		t.Fatalf("ReadRawContent() before expiry error = %v", err)
+	}
+	if !record.ExpiresAt.Equal(expiresAt) || len(record.Content.Ciphertext) == 0 {
+		t.Fatalf("visible raw record = %+v", record)
+	}
+
+	start := make(chan struct{})
+	errorsSeen := make(chan error, 20)
+	var readers sync.WaitGroup
+	for range 20 {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			<-start
+			_, err := repository.ReadRawContent(context.Background(), audit.RawContentLookup{
+				AuditID: fixture.auditID, ContentKind: audit.ContentKindRequest, VisibleAt: expiresAt,
+			})
+			errorsSeen <- err
+		}()
+	}
+	close(start)
+	if _, err := repository.DeleteExpiredRawContent(context.Background(), expiresAt); err != nil {
+		t.Fatalf("DeleteExpiredRawContent() error = %v", err)
+	}
+	readers.Wait()
+	close(errorsSeen)
+	for err := range errorsSeen {
+		if !errors.Is(err, audit.ErrRawContentUnavailable) {
+			t.Fatalf("read at exact expiry error = %v, want ErrRawContentUnavailable", err)
+		}
+	}
+}
+
+func TestRepositoryLifecycleCleanupPersistsLagAndRetainsMetadata(t *testing.T) {
+	db, _ := migrateRepositorySchema(t)
+	fixture := insertAuditPolicyFixture(t, db)
+	repository := NewRepository(db)
+	cleanupAt := fixture.now.Add(3 * time.Hour)
+	expiresAt := cleanupAt.Add(-time.Hour - time.Microsecond)
+	insertRawRetentionContent(t, db, fixture.auditID, fixture.now, expiresAt)
+	mustExec(t, db, `INSERT INTO usage_records (id, audit_id, request_id, key_id, owner_kind, identity_id, team_id, model_id, outcome, usage_reported, created_at) VALUES ($1, $2, $3, $4, 'personal', $5, $6, 'gpt-test', 'success', false, $7)`, "85000000-0000-0000-0000-000000000020", fixture.auditID, fixture.requestID, fixture.keyID, fixture.identityID, fixture.teamID, fixture.now)
+	mustExec(t, db, `INSERT INTO security_events (id, event_type, actor_identity_id, target_audit_id, request_id, outcome, detail_code, occurred_at) VALUES ($1, 'lifecycle_test', $2, $3, $4, 'success', 'metadata_retained', $5)`, "86000000-0000-0000-0000-000000000020", fixture.identityID, fixture.auditID, fixture.requestID, fixture.now)
+
+	lag, err := repository.ObserveDeletionLag(context.Background(), cleanupAt)
+	if err != nil {
+		t.Fatalf("ObserveDeletionLag() error = %v", err)
+	}
+	if !lag.Critical || lag.OldestExpiredAt == nil || !lag.OldestExpiredAt.Equal(expiresAt) || lag.OverdueSince == nil || !lag.OverdueSince.Equal(expiresAt.Add(audit.DeletionTarget)) {
+		t.Fatalf("deletion lag = %+v, want critical overdue state", lag)
+	}
+	deleted, err := repository.DeleteExpiredRawContent(context.Background(), cleanupAt)
+	if err != nil {
+		t.Fatalf("DeleteExpiredRawContent() error = %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted rows = %d, want 1", deleted)
+	}
+	assertLifecycleRowCount(t, db, "audit_raw_content", "audit_id", fixture.auditID, 0)
+	assertLifecycleRowCount(t, db, "audit_records", "id", fixture.auditID, 1)
+	assertLifecycleRowCount(t, db, "usage_records", "audit_id", fixture.auditID, 1)
+	assertLifecycleRowCount(t, db, "security_events", "target_audit_id", fixture.auditID, 1)
+
+	var lastCleanup time.Time
+	var overdue sql.NullTime
+	if err := db.QueryRow(`SELECT last_cleanup_at, deletion_overdue_since FROM operational_state WHERE id = 1`).Scan(&lastCleanup, &overdue); err != nil {
+		t.Fatalf("read cleanup state: %v", err)
+	}
+	if !lastCleanup.Equal(cleanupAt) || overdue.Valid {
+		t.Fatalf("cleanup state = (%v, %v), want completion and no overdue state", lastCleanup, overdue)
+	}
+}
+
+func TestRepositoryDeletionLagBecomesCriticalOnlyAfterOneHour(t *testing.T) {
+	db, _ := migrateRepositorySchema(t)
+	fixture := insertAuditPolicyFixture(t, db)
+	repository := NewRepository(db)
+	cleanupAt := fixture.now.Add(3 * time.Hour)
+	expiresAt := cleanupAt.Add(-audit.DeletionTarget)
+	insertRawRetentionContent(t, db, fixture.auditID, fixture.now, expiresAt)
+
+	lag, err := repository.ObserveDeletionLag(context.Background(), cleanupAt)
+	if err != nil {
+		t.Fatalf("ObserveDeletionLag() error = %v", err)
+	}
+	if lag.Critical || lag.OverdueSince != nil {
+		t.Fatalf("deletion lag at exact one-hour boundary = %+v, want non-critical", lag)
+	}
+}
+
+func TestRepositoryDeletionFailurePreservesCriticalLagState(t *testing.T) {
+	db, _ := migrateRepositorySchema(t)
+	fixture := insertAuditPolicyFixture(t, db)
+	repository := NewRepository(db)
+	cleanupAt := fixture.now.Add(3 * time.Hour)
+	insertRawRetentionContent(t, db, fixture.auditID, fixture.now, cleanupAt.Add(-2*time.Hour))
+	if _, err := repository.ObserveDeletionLag(context.Background(), cleanupAt); err != nil {
+		t.Fatalf("ObserveDeletionLag() error = %v", err)
+	}
+	mustExec(t, db, `CREATE FUNCTION reject_raw_cleanup() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic cleanup failure'; END $$`)
+	mustExec(t, db, `CREATE TRIGGER reject_raw_cleanup BEFORE DELETE ON audit_raw_content FOR EACH ROW EXECUTE FUNCTION reject_raw_cleanup()`)
+
+	if _, err := repository.DeleteExpiredRawContent(context.Background(), cleanupAt); err == nil {
+		t.Fatal("DeleteExpiredRawContent() succeeded despite failure trigger")
+	}
+	var overdue sql.NullTime
+	if err := db.QueryRow(`SELECT deletion_overdue_since FROM operational_state WHERE id = 1`).Scan(&overdue); err != nil {
+		t.Fatalf("read preserved lag state: %v", err)
+	}
+	if !overdue.Valid {
+		t.Fatal("critical deletion lag state was cleared after failed deletion")
+	}
+	assertLifecycleRowCount(t, db, "audit_raw_content", "audit_id", fixture.auditID, 1)
+}
+
+func TestRepositoryPurgesOnlyRevokedVerificationHashes(t *testing.T) {
+	db, _ := migrateRepositorySchema(t)
+	fixture := insertAuditPolicyFixture(t, db)
+	repository := NewRepository(db)
+	purgeAt := fixture.now.Add(time.Hour)
+	const activeKeyID = "83000000-0000-0000-0000-000000000030"
+	mustExec(t, db, `INSERT INTO api_keys (id, identity_id, kind, name, prefix, verification_hash, status, created_at) VALUES ($1, $2, 'personal', 'active-sibling', 'nap_active', $3, 'active', $4)`, activeKeyID, fixture.identityID, []byte("active-sibling-hash"), fixture.now)
+	mustExec(t, db, `UPDATE api_keys SET status = 'revoked', revoked_at = $1 WHERE id = $2`, purgeAt.Add(-time.Minute), fixture.keyID)
+
+	purged, err := repository.PurgeRevokedVerificationHashes(context.Background(), purgeAt)
+	if err != nil {
+		t.Fatalf("PurgeRevokedVerificationHashes() error = %v", err)
+	}
+	if purged != 1 {
+		t.Fatalf("purged hashes = %d, want 1", purged)
+	}
+	var revokedHash, activeHash []byte
+	var revokedID, prefix, ownerID, status string
+	if err := db.QueryRow(`SELECT id::text, prefix, identity_id::text, status, verification_hash FROM api_keys WHERE id = $1`, fixture.keyID).Scan(&revokedID, &prefix, &ownerID, &status, &revokedHash); err != nil {
+		t.Fatalf("read purged key metadata: %v", err)
+	}
+	if revokedID != fixture.keyID || prefix != "nap_audit" || ownerID != fixture.identityID || status != "revoked" || revokedHash != nil {
+		t.Fatalf("purged key = (%q, %q, %q, %q, %v)", revokedID, prefix, ownerID, status, revokedHash)
+	}
+	if err := db.QueryRow(`SELECT verification_hash FROM api_keys WHERE id = $1`, activeKeyID).Scan(&activeHash); err != nil {
+		t.Fatalf("read active key hash: %v", err)
+	}
+	if string(activeHash) != "active-sibling-hash" {
+		t.Fatalf("active key hash = %q, want unchanged", activeHash)
+	}
+	expectRejected(t, db, `UPDATE api_keys SET verification_hash = NULL WHERE id = $1`, activeKeyID)
+}
+
+func assertLifecycleRowCount(t *testing.T, db *sql.DB, tableName, columnName string, value any, want int) {
+	t.Helper()
+	queries := map[string]string{
+		"audit_raw_content.audit_id":      `SELECT count(*) FROM audit_raw_content WHERE audit_id = $1`,
+		"audit_records.id":                `SELECT count(*) FROM audit_records WHERE id = $1`,
+		"usage_records.audit_id":          `SELECT count(*) FROM usage_records WHERE audit_id = $1`,
+		"security_events.target_audit_id": `SELECT count(*) FROM security_events WHERE target_audit_id = $1`,
+	}
+	query, ok := queries[tableName+"."+columnName]
+	if !ok {
+		t.Fatalf("unsupported count target %s.%s", tableName, columnName)
+	}
+	var got int
+	if err := db.QueryRow(query, value).Scan(&got); err != nil {
+		t.Fatalf("count %s rows: %v", tableName, err)
+	}
+	if got != want {
+		t.Fatalf("%s row count = %d, want %d", tableName, got, want)
+	}
+}
