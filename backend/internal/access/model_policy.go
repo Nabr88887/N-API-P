@@ -127,6 +127,11 @@ func (service *ModelAllowlistService) Replace(ctx context.Context, session Activ
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrForbidden):
+			event.Outcome = SecurityEventDenied
+			event.DetailCode = "forbidden"
+			if auditErr := service.repository.AppendSecurityEvent(ctx, event); auditErr != nil {
+				return nil, ErrSecurityAuditUnavailable
+			}
 			return nil, ErrForbidden
 		case errors.Is(err, ErrInvalidModelAllowlist):
 			return nil, ErrInvalidModelAllowlist

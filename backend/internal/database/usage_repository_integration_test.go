@@ -15,6 +15,7 @@ import (
 func TestRepositoryCreateUsageRecordFreezesRequestTimeFactsAndPrice(t *testing.T) {
 	db, _ := migrateRepositorySchema(t)
 	fixture := insertAuditPolicyFixture(t, db)
+	finalizeUsageAudit(t, db, fixture.auditID, "complete", "success", "upstream-usage-1", fixture.now.Add(time.Minute))
 	repository := NewRepository(db)
 	record, err := usage.NewRecord(usage.RecordInput{
 		ID: fixtureUsageID(1), AuditID: fixture.auditID, RequestID: fixture.requestID, KeyID: fixture.keyID,
@@ -67,6 +68,7 @@ func TestRepositoryCreateUsageRecordKeepsMissingUsageUnknown(t *testing.T) {
 	secondAuditID := "84000000-0000-0000-0000-000000000002"
 	secondRequestID := "87000000-0000-0000-0000-000000000002"
 	insertPendingAudit(t, db, secondAuditID, secondRequestID, fixture, fixture.now.Add(time.Minute))
+	finalizeUsageAudit(t, db, secondAuditID, "incomplete", "upstream_error", "", fixture.now.Add(2*time.Minute))
 	record, err := usage.NewRecord(usage.RecordInput{
 		ID: fixtureUsageID(2), AuditID: secondAuditID, RequestID: secondRequestID, KeyID: fixture.keyID,
 		OwnerKind: usage.OwnerKindPersonal, IdentityID: fixture.identityID, TeamID: fixture.teamID,
@@ -92,6 +94,7 @@ func TestRepositoryCreateUsageRecordKeepsMissingUsageUnknown(t *testing.T) {
 func TestRepositoryCreateUsageRecordIsAppendOnlyPerAuditAndRequest(t *testing.T) {
 	db, _ := migrateRepositorySchema(t)
 	fixture := insertAuditPolicyFixture(t, db)
+	finalizeUsageAudit(t, db, fixture.auditID, "incomplete", "cancelled", "", fixture.now.Add(time.Minute))
 	record, err := usage.NewRecord(usage.RecordInput{
 		ID: fixtureUsageID(3), AuditID: fixture.auditID, RequestID: fixture.requestID, KeyID: fixture.keyID,
 		OwnerKind: usage.OwnerKindPersonal, IdentityID: fixture.identityID, TeamID: fixture.teamID,
@@ -104,14 +107,20 @@ func TestRepositoryCreateUsageRecordIsAppendOnlyPerAuditAndRequest(t *testing.T)
 	if err := repository.CreateUsageRecord(context.Background(), record); err != nil {
 		t.Fatalf("first CreateUsageRecord() error = %v", err)
 	}
-	if err := repository.CreateUsageRecord(context.Background(), record); !errors.Is(err, usage.ErrUsageAlreadyRecorded) {
-		t.Fatalf("duplicate CreateUsageRecord() error = %v, want ErrUsageAlreadyRecorded", err)
+	duplicate := record
+	duplicate.ID = fixtureUsageID(8)
+	if err := repository.CreateUsageRecord(context.Background(), duplicate); !errors.Is(err, usage.ErrUsageAlreadyRecorded) {
+		t.Fatalf("duplicate audit/request CreateUsageRecord() error = %v, want ErrUsageAlreadyRecorded", err)
+	}
+	if err := repository.CreateUsageRecord(context.Background(), record); err == nil || errors.Is(err, usage.ErrUsageAlreadyRecorded) {
+		t.Fatalf("duplicate record ID CreateUsageRecord() error = %v, want ordinary persistence error", err)
 	}
 }
 
 func TestRepositoryCreateUsageRecordRejectsFactsThatDoNotMatchAudit(t *testing.T) {
 	db, _ := migrateRepositorySchema(t)
 	fixture := insertAuditPolicyFixture(t, db)
+	finalizeUsageAudit(t, db, fixture.auditID, "complete", "success", "", fixture.now.Add(time.Minute))
 	otherKeyID := "83000000-0000-0000-0000-000000000002"
 	mustExec(t, db, `INSERT INTO api_keys (id, identity_id, kind, name, prefix, verification_hash, status, created_at) VALUES ($1, $2, 'personal', 'other-key', 'nap_other', $3, 'active', $4)`, otherKeyID, fixture.identityID, []byte("other-key-hash"), fixture.now)
 	record, err := usage.NewRecord(usage.RecordInput{
@@ -128,6 +137,52 @@ func TestRepositoryCreateUsageRecordRejectsFactsThatDoNotMatchAudit(t *testing.T
 	}
 }
 
+func TestRepositoryCreateUsageRecordRejectsPendingAudit(t *testing.T) {
+	db, _ := migrateRepositorySchema(t)
+	fixture := insertAuditPolicyFixture(t, db)
+	record, err := usage.NewRecord(usage.RecordInput{
+		ID: fixtureUsageID(6), AuditID: fixture.auditID, RequestID: fixture.requestID, KeyID: fixture.keyID,
+		OwnerKind: usage.OwnerKindPersonal, IdentityID: fixture.identityID, TeamID: fixture.teamID,
+		ModelID: "gpt-test", Outcome: usage.OutcomeSuccess, CreatedAt: fixture.now,
+	})
+	if err != nil {
+		t.Fatalf("usage.NewRecord() error = %v", err)
+	}
+
+	if err := NewRepository(db).CreateUsageRecord(context.Background(), record); !errors.Is(err, usage.ErrInvalidRecord) {
+		t.Fatalf("CreateUsageRecord() pending audit error = %v, want ErrInvalidRecord", err)
+	}
+}
+
+func TestRepositoryCreateUsageRecordRejectsTerminalFactsThatDoNotMatchAudit(t *testing.T) {
+	for _, test := range []struct {
+		name              string
+		upstreamRequestID string
+		outcome           usage.Outcome
+	}{
+		{name: "upstream request ID", upstreamRequestID: "different-upstream", outcome: usage.OutcomeSuccess},
+		{name: "outcome", upstreamRequestID: "upstream-audit", outcome: usage.OutcomeUpstreamError},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db, _ := migrateRepositorySchema(t)
+			fixture := insertAuditPolicyFixture(t, db)
+			finalizeUsageAudit(t, db, fixture.auditID, "complete", "success", "upstream-audit", fixture.now.Add(time.Minute))
+			record, err := usage.NewRecord(usage.RecordInput{
+				ID: fixtureUsageID(7), AuditID: fixture.auditID, RequestID: fixture.requestID, KeyID: fixture.keyID,
+				OwnerKind: usage.OwnerKindPersonal, IdentityID: fixture.identityID, TeamID: fixture.teamID,
+				ModelID: "gpt-test", UpstreamRequestID: test.upstreamRequestID, Outcome: test.outcome, CreatedAt: fixture.now.Add(time.Minute),
+			})
+			if err != nil {
+				t.Fatalf("usage.NewRecord() error = %v", err)
+			}
+
+			if err := NewRepository(db).CreateUsageRecord(context.Background(), record); !errors.Is(err, usage.ErrInvalidRecord) {
+				t.Fatalf("CreateUsageRecord() mismatched terminal facts error = %v, want ErrInvalidRecord", err)
+			}
+		})
+	}
+}
+
 func TestRepositoryCreateUsageRecordPersistsServiceOwnerSnapshot(t *testing.T) {
 	db, _ := migrateRepositorySchema(t)
 	fixture := insertAuditPolicyFixture(t, db)
@@ -140,6 +195,7 @@ func TestRepositoryCreateUsageRecordPersistsServiceOwnerSnapshot(t *testing.T) {
 	mustExec(t, db, `INSERT INTO service_accounts (id, team_id, responsible_identity_id, name, status, created_at) VALUES ($1, $2, $3, 'usage-service', 'active', $4)`, serviceAccountID, fixture.teamID, fixture.identityID, fixture.now)
 	mustExec(t, db, `INSERT INTO api_keys (id, service_account_id, kind, name, prefix, verification_hash, status, created_at) VALUES ($1, $2, 'service', 'usage-group-key', 'nap_group', $3, 'active', $4)`, groupKeyID, serviceAccountID, []byte("group-key-hash"), fixture.now)
 	mustExec(t, db, `INSERT INTO audit_records (id, request_id, key_id, owner_kind, service_account_id, responsible_identity_id, team_id, model_id, capture_status, outcome, observed_request_bytes, observed_response_bytes, created_at, updated_at) VALUES ($1, $2, $3, 'service', $4, $5, $6, 'gpt-test', 'pending', 'pending', 128, 0, $7, $7)`, auditID, requestID, groupKeyID, serviceAccountID, fixture.identityID, fixture.teamID, fixture.now)
+	finalizeUsageAudit(t, db, auditID, "complete", "success", "", fixture.now.Add(time.Minute))
 	record, err := usage.NewRecord(usage.RecordInput{
 		ID: fixtureUsageID(5), AuditID: auditID, RequestID: requestID, KeyID: groupKeyID,
 		OwnerKind: usage.OwnerKindService, ServiceAccountID: serviceAccountID,
@@ -165,4 +221,9 @@ func TestRepositoryCreateUsageRecordPersistsServiceOwnerSnapshot(t *testing.T) {
 
 func fixtureUsageID(number int) string {
 	return fmt.Sprintf("85000000-0000-0000-0000-%012d", number)
+}
+
+func finalizeUsageAudit(t *testing.T, db *sql.DB, auditID, captureStatus, outcome, upstreamRequestID string, completedAt time.Time) {
+	t.Helper()
+	mustExec(t, db, `UPDATE audit_records SET capture_status = $2, outcome = $3, upstream_request_id = NULLIF($4, ''), updated_at = $5, completed_at = $5 WHERE id = $1`, auditID, captureStatus, outcome, upstreamRequestID, completedAt)
 }

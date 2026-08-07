@@ -43,8 +43,8 @@ INSERT INTO usage_records (
     audit.responsible_identity_id,
     audit.team_id,
     audit.model_id,
-    NULLIF($11, ''),
-    $12,
+    audit.upstream_request_id,
+    audit.outcome,
     $13,
     $14,
     $15,
@@ -63,7 +63,11 @@ WHERE audit.id = $2::uuid
   AND audit.service_account_id IS NOT DISTINCT FROM $7::uuid
   AND audit.responsible_identity_id IS NOT DISTINCT FROM $8::uuid
   AND audit.team_id = $9::uuid
-  AND audit.model_id = $10`
+  AND audit.model_id = $10
+  AND audit.capture_status IN ('complete', 'truncated', 'incomplete')
+  AND audit.completed_at IS NOT NULL
+  AND audit.upstream_request_id IS NOT DISTINCT FROM NULLIF($11::text, '')
+  AND audit.outcome = $12`
 
 func (r *Repository) CreateUsageRecord(ctx context.Context, record usage.Record) error {
 	if r == nil || r.db == nil || record.Validate() != nil {
@@ -125,5 +129,13 @@ func (r *Repository) CreateUsageRecord(ctx context.Context, record usage.Record)
 
 func isUsageRecordConflict(err error) bool {
 	var postgresError *pgconn.PgError
-	return errors.As(err, &postgresError) && postgresError.Code == postgresUniqueViolation
+	if !errors.As(err, &postgresError) || postgresError.Code != postgresUniqueViolation {
+		return false
+	}
+	switch postgresError.ConstraintName {
+	case "usage_records_audit_id_key", "usage_records_request_id_key":
+		return true
+	default:
+		return false
+	}
 }

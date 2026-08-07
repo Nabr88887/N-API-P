@@ -126,6 +126,46 @@ func TestModelAllowlistServiceAuditsAuthorizedReplacement(t *testing.T) {
 	}
 }
 
+func TestModelAllowlistServiceAuditsConcurrentAdministratorRevocation(t *testing.T) {
+	now := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name      string
+		appendErr error
+		want      error
+	}{
+		{name: "denial is recorded", want: ErrForbidden},
+		{name: "audit failure takes precedence", appendErr: errors.New("audit unavailable"), want: ErrSecurityAuditUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository := &modelAllowlistRepositoryFake{replaceErr: ErrForbidden, appendErr: test.appendErr}
+			service, err := NewModelAllowlistService(repository)
+			if err != nil {
+				t.Fatalf("NewModelAllowlistService() error = %v", err)
+			}
+			service.now = func() time.Time { return now }
+			service.newID = func() (string, error) { return "event-concurrent-revocation", nil }
+			session := ActivePortalSession{IdentityID: "admin-1", Role: RoleSystemAdministrator, ReauthenticatedUntil: timePtr(now.Add(time.Minute))}
+
+			_, err = service.Replace(context.Background(), session, ModelAllowlistChangeInput{
+				Entries: []ModelAllowlistEntry{{ModelID: "gpt-4o", Status: ModelStatusAllowed}}, Confirmed: true, RequestID: "request-concurrent-revocation",
+			})
+			if !errors.Is(err, test.want) {
+				t.Fatalf("Replace() error = %v, want %v", err, test.want)
+			}
+			if repository.changed {
+				t.Fatal("model policy changed after concurrent administrator revocation")
+			}
+			if len(repository.events) != 1 {
+				t.Fatalf("events = %+v, want one denial audit attempt", repository.events)
+			}
+			event := repository.events[0]
+			if event.Outcome != SecurityEventDenied || event.DetailCode != "forbidden" || event.ActorIdentityID != "admin-1" || event.RequestID != "request-concurrent-revocation" {
+				t.Fatalf("event = %+v, want correlated forbidden denial", event)
+			}
+		})
+	}
+}
+
 func TestModelAllowlistServiceRejectsInvalidEntriesAndDuplicateModelIDs(t *testing.T) {
 	service, err := NewModelAllowlistService(&modelAllowlistRepositoryFake{})
 	if err != nil {
@@ -178,11 +218,13 @@ func TestModelAllowlistServiceRejectsMoreThanMaximumEntries(t *testing.T) {
 }
 
 type modelAllowlistRepositoryFake struct {
-	entries []ModelAllowlistEntry
-	changed bool
-	change  ModelAllowlistChange
-	events  []SecurityEvent
-	err     error
+	entries    []ModelAllowlistEntry
+	changed    bool
+	change     ModelAllowlistChange
+	events     []SecurityEvent
+	err        error
+	replaceErr error
+	appendErr  error
 }
 
 func (r *modelAllowlistRepositoryFake) ReadModelAllowlist(context.Context) ([]ModelAllowlistEntry, error) {
@@ -190,6 +232,9 @@ func (r *modelAllowlistRepositoryFake) ReadModelAllowlist(context.Context) ([]Mo
 }
 
 func (r *modelAllowlistRepositoryFake) ReplaceModelAllowlist(_ context.Context, change ModelAllowlistChange) ([]ModelAllowlistEntry, error) {
+	if r.replaceErr != nil {
+		return nil, r.replaceErr
+	}
 	if r.err != nil {
 		return nil, r.err
 	}
@@ -200,9 +245,12 @@ func (r *modelAllowlistRepositoryFake) ReplaceModelAllowlist(_ context.Context, 
 }
 
 func (r *modelAllowlistRepositoryFake) AppendSecurityEvent(_ context.Context, event SecurityEvent) error {
+	r.events = append(r.events, event)
+	if r.appendErr != nil {
+		return r.appendErr
+	}
 	if r.err != nil {
 		return r.err
 	}
-	r.events = append(r.events, event)
 	return nil
 }
