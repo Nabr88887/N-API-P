@@ -173,6 +173,7 @@ const (
 	SensitiveActionRawView                      SensitiveAction = "raw_view"
 	SensitiveActionRetentionPolicy              SensitiveAction = "retention_policy_change"
 	SensitiveActionCredentialCompromiseRecovery SensitiveAction = "credential_compromise_recovery"
+	SensitiveActionModelAllowlist               SensitiveAction = "model_allowlist_change"
 )
 
 type SecurityEventOutcome string
@@ -325,7 +326,7 @@ func (guard *SensitiveActionGuard) authorizationEvent(request SensitiveActionReq
 
 func knownSensitiveAction(action SensitiveAction) bool {
 	switch action {
-	case SensitiveActionRawView, SensitiveActionRetentionPolicy, SensitiveActionCredentialCompromiseRecovery:
+	case SensitiveActionRawView, SensitiveActionRetentionPolicy, SensitiveActionCredentialCompromiseRecovery, SensitiveActionModelAllowlist:
 		return true
 	default:
 		return false
