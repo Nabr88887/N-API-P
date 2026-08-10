@@ -42,6 +42,24 @@ func TestChatProxyHandlerForwardsValidatedSSEAndFinalizesLogicalResponse(t *test
 	}
 }
 
+func TestChatProxyHandlerGatesWhenSSEUsagePersistenceFails(t *testing.T) {
+	stream := "data: {\"id\":\"sse-usage-fail\",\"model\":\"gpt-test\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hello\"},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	upstream := &fakeChatUpstream{streamResponse: &NewAPIResponse{StatusCode: http.StatusOK, ContentType: "text/event-stream", Body: io.NopCloser(strings.NewReader(stream))}}
+	finalizer := &fakeResponseFinalizer{}
+	usageRepo := &fakeUsageRepository{err: errors.New("synthetic usage persistence failure")}
+	handler := newTestChatProxyHandler(t, upstream, &fakeInitialCapture{receipt: audit.CaptureReceipt{AuditID: "generated-id", RequestID: "stream-usage-fail"}}, finalizer, usageRepo, nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, streamProxyRequest(t, "stream-usage-fail"))
+
+	if recorder.Code != http.StatusOK || recorder.Body.String() != stream {
+		t.Fatalf("response = (%d, %q), want completed SSE response", recorder.Code, recorder.Body.String())
+	}
+	if finalizer.postDispatchFailures != 1 || finalizer.postDispatchAuditID != "generated-id" {
+		t.Fatalf("post-dispatch failure = (%d, %s), want one linked gate event", finalizer.postDispatchFailures, finalizer.postDispatchAuditID)
+	}
+}
+
 func TestChatProxyHandlerStopsForwardingMalformedSSEAndRecordsIncomplete(t *testing.T) {
 	stream := "data: {\"id\":\"sse-2\",\"model\":\"gpt-test\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"safe\"}}]}\n\n" + "data: {not-json}\n\n"
 	upstream := &fakeChatUpstream{streamResponse: &NewAPIResponse{StatusCode: http.StatusOK, ContentType: "text/event-stream", Body: io.NopCloser(strings.NewReader(stream))}}

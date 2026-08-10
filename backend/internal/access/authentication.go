@@ -16,6 +16,8 @@ const (
 	loginFailureLimit       = 5
 	loginFailureWindow      = 15 * time.Minute
 	loginLockDuration       = 15 * time.Minute
+	unknownLoginStateLimit  = 4096
+	unknownLoginCleanupWait = time.Minute
 	sessionRandomBytes      = 32
 	sessionIdleLifetime     = 30 * time.Minute
 	sessionAbsoluteLifetime = 12 * time.Hour
@@ -88,8 +90,9 @@ type PortalSession struct {
 }
 
 type unknownLoginLimiter struct {
-	mu     sync.Mutex
-	states map[string]unknownLoginState
+	mu            sync.Mutex
+	states        map[string]unknownLoginState
+	nextCleanupAt time.Time
 }
 
 type unknownLoginState struct {
@@ -104,7 +107,20 @@ func newUnknownLoginLimiter() *unknownLoginLimiter {
 func (limiter *unknownLoginLimiter) allow(email string, now time.Time) bool {
 	limiter.mu.Lock()
 	defer limiter.mu.Unlock()
-	state := limiter.states[email]
+	state, exists := limiter.states[email]
+	if !exists && len(limiter.states) >= unknownLoginStateLimit {
+		if limiter.nextCleanupAt.IsZero() || !now.Before(limiter.nextCleanupAt) {
+			for key, candidate := range limiter.states {
+				if !now.Before(candidate.windowStartedAt.Add(loginFailureWindow)) {
+					delete(limiter.states, key)
+				}
+			}
+			limiter.nextCleanupAt = now.Add(unknownLoginCleanupWait)
+		}
+		if len(limiter.states) >= unknownLoginStateLimit {
+			return false
+		}
+	}
 	if state.windowStartedAt.IsZero() || !now.Before(state.windowStartedAt.Add(loginFailureWindow)) {
 		state = unknownLoginState{windowStartedAt: now, attempts: 0}
 	}

@@ -51,6 +51,13 @@ func TestAuthenticationRepositorySerializesFiveFailuresAndAllowsExpiryRecovery(t
 	if failedAttempts != 5 || !lockedUntil.Equal(accessNow.Add(15*time.Minute)) {
 		t.Fatalf("lock state = (%d, %v), want (5, %v)", failedAttempts, lockedUntil, accessNow.Add(15*time.Minute))
 	}
+	var lockoutEvents int
+	if err := db.QueryRow(`SELECT count(*) FROM security_events WHERE event_type = 'login_lockout' AND target_identity_id = $1`, accessEmployeeID).Scan(&lockoutEvents); err != nil {
+		t.Fatalf("query login lockout events: %v", err)
+	}
+	if lockoutEvents != 1 {
+		t.Fatalf("login lockout events = %d, want exactly one", lockoutEvents)
+	}
 
 	recoveredCandidate, err := repository.FindLoginCandidate(context.Background(), access.LoginLookup{Email: "employee@example.internal", CheckedAt: lockedUntil})
 	if err != nil {

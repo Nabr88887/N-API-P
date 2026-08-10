@@ -25,6 +25,7 @@ const (
 	GateReasonStartupProbe            = "startup_probe_required"
 	GateReasonInitialCapture          = "initial_capture_failure"
 	GateReasonFinalizationPersistence = "finalization_persistence_failure"
+	GateReasonUsagePersistence        = "usage_persistence_failure"
 	GateReasonGateRead                = "gate_read_failure"
 	GateReasonRecovery                = "recovery_failure"
 	GateReasonProcessRestart          = "process_restart_reconciliation"
@@ -53,6 +54,10 @@ type ChatGate interface {
 type FailureGate interface {
 	Block(context.Context, string) error
 	MarkFinalizationFailure(context.Context, string, string, time.Time) error
+}
+
+type PostDispatchFailureGate interface {
+	MarkPostDispatchFailure(context.Context, string, string, string, time.Time) error
 }
 
 type DegradedStateMachine struct {
@@ -121,15 +126,22 @@ func (machine *DegradedStateMachine) Block(ctx context.Context, reason string) e
 }
 
 func (machine *DegradedStateMachine) MarkFinalizationFailure(ctx context.Context, auditID, requestID string, completedAt time.Time) error {
+	return machine.MarkPostDispatchFailure(ctx, auditID, requestID, GateReasonFinalizationPersistence, completedAt)
+}
+
+func (machine *DegradedStateMachine) MarkPostDispatchFailure(ctx context.Context, auditID, requestID, reason string, completedAt time.Time) error {
 	if machine == nil || machine.repository == nil || auditID == "" || requestID == "" || completedAt.IsZero() {
 		return ErrInvalidDegradedStateMachine
 	}
+	if err := validateGateReason(reason); err != nil {
+		return err
+	}
 	changedAt := completedAt.UTC()
-	machine.setBlocked(GateReasonFinalizationPersistence, changedAt)
+	machine.setBlocked(reason, changedAt)
 	persistenceCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), degradedPersistenceTimeout)
 	defer cancel()
-	if err := machine.repository.MarkAuditIncompleteAndBlock(persistenceCtx, auditID, requestID, GateReasonFinalizationPersistence, changedAt); err != nil {
-		return fmt.Errorf("%w: persist finalization failure: %w", ErrAuditUnavailable, err)
+	if err := machine.repository.MarkAuditIncompleteAndBlock(persistenceCtx, auditID, requestID, reason, changedAt); err != nil {
+		return fmt.Errorf("%w: persist post-dispatch failure: %w", ErrAuditUnavailable, err)
 	}
 	return nil
 }

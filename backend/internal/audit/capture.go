@@ -214,6 +214,17 @@ func (service *ResponseFinalizationService) markFinalizationFailure(ctx context.
 	return service.gate.MarkFinalizationFailure(ctx, input.AuditID, input.RequestID, input.CompletedAt)
 }
 
+func (service *ResponseFinalizationService) MarkPostDispatchFailure(ctx context.Context, auditID, requestID, reason string, completedAt time.Time) error {
+	if service == nil || service.gate == nil {
+		return ErrAuditUnavailable
+	}
+	gate, ok := service.gate.(PostDispatchFailureGate)
+	if !ok {
+		return ErrAuditUnavailable
+	}
+	return gate.MarkPostDispatchFailure(ctx, auditID, requestID, reason, completedAt)
+}
+
 func validateFinalizationInput(input ResponseFinalizationInput) error {
 	if input.AuditID == "" || input.RequestID == "" || input.TeamID == "" || input.ModelID == "" || input.CreatedAt.IsZero() {
 		return ErrInvalidFinalization

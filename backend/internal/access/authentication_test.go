@@ -5,11 +5,22 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestUnknownLoginLimiterHasBoundedState(t *testing.T) {
+	limiter := newUnknownLoginLimiter()
+	for index := 0; index < 4096+128; index++ {
+		limiter.allow(fmt.Sprintf("missing-%d@example.internal", index), fixedNow)
+	}
+	if got := len(limiter.states); got > 4096 {
+		t.Fatalf("unknown-login limiter state = %d, want at most 4096", got)
+	}
+}
 
 func TestAuthenticationRejectsUnknownWrongDisabledAndLockedCredentialsIndistinguishably(t *testing.T) {
 	tests := []struct {

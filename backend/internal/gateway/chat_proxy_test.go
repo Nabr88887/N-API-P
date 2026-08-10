@@ -49,6 +49,42 @@ func TestChatProxyHandlerProxiesSuccessAndLinksAuditUsage(t *testing.T) {
 	}
 }
 
+func TestChatProxyHandlerFinalizesCancelledTransportWithDurableContext(t *testing.T) {
+	upstream := &fakeChatUpstream{err: context.Canceled}
+	capture := &fakeInitialCapture{receipt: audit.CaptureReceipt{AuditID: "generated-id", RequestID: "request-cancelled"}}
+	finalizer := &fakeResponseFinalizer{}
+	handler := newTestChatProxyHandler(t, upstream, capture, finalizer, &fakeUsageRepository{}, nil)
+	recorder := httptest.NewRecorder()
+	request := proxyRequest(t, []byte(`{"model":"gpt-test","messages":[{"role":"user","content":"hello"}]}`), "request-cancelled")
+	ctx, cancel := context.WithCancel(request.Context())
+	cancel()
+	handler.ServeHTTP(recorder, request.WithContext(ctx))
+
+	if finalizer.finalizeContextErr != nil {
+		t.Fatalf("finalization context error = %v, want detached persistence context", finalizer.finalizeContextErr)
+	}
+	if finalizer.input.CaptureStatus != audit.CaptureStatusIncomplete || finalizer.input.Outcome != audit.AuditOutcomeCancelled || finalizer.input.ErrorCode != "CLIENT_DISCONNECTED" {
+		t.Fatalf("finalization = %+v, want incomplete cancelled client disconnect", finalizer.input)
+	}
+}
+
+func TestChatProxyHandlerGatesWhenUsagePersistenceFails(t *testing.T) {
+	responseBody := []byte(`{"id":"chatcmpl-usage-fail","model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`)
+	upstream := &fakeChatUpstream{response: &NewAPIResponse{StatusCode: http.StatusOK, ContentType: "application/json", Body: io.NopCloser(bytes.NewReader(responseBody))}}
+	finalizer := &fakeResponseFinalizer{}
+	usageRepo := &fakeUsageRepository{err: errors.New("synthetic usage persistence failure")}
+	handler := newTestChatProxyHandler(t, upstream, &fakeInitialCapture{receipt: audit.CaptureReceipt{AuditID: "generated-id", RequestID: "request-usage-fail"}}, finalizer, usageRepo, nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, proxyRequest(t, []byte(`{"model":"gpt-test","messages":[{"role":"user","content":"hello"}]}`), "request-usage-fail"))
+
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), `"code":"AUDIT_UNAVAILABLE"`) {
+		t.Fatalf("response = (%d, %s), want audit unavailable", recorder.Code, recorder.Body.String())
+	}
+	if finalizer.postDispatchFailures != 1 || finalizer.postDispatchAuditID != "generated-id" || finalizer.postDispatchRequestID != "request-usage-fail" {
+		t.Fatalf("post-dispatch failure = (%d, %s, %s), want one linked gate event", finalizer.postDispatchFailures, finalizer.postDispatchAuditID, finalizer.postDispatchRequestID)
+	}
+}
+
 func TestChatProxyHandlerRelaysToolDataWithoutExecution(t *testing.T) {
 	body := []byte(`{"model":"gpt-test","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"url\":\"http://127.0.0.1/private\",\"command\":\"whoami\"}"}}]},{"role":"tool","tool_call_id":"call_1","content":"opaque result"}],"tools":[{"type":"function","function":{"name":"lookup","description":"Return text","parameters":{"type":"object","properties":{"url":{"type":"string"}},"required":["url"]}}}],"tool_choice":{"type":"function","function":{"name":"lookup"}}}`)
 	responseBody := []byte(`{"id":"chatcmpl-tool","model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_2","type":"function","function":{"name":"lookup","arguments":"{\"url\":\"http://169.254.169.254/latest\"}"}}]},"finish_reason":"tool_calls"}]}`)
@@ -224,16 +260,28 @@ func (fake *fakeInitialCapture) CaptureValidatedRequest(_ context.Context, input
 }
 
 type fakeResponseFinalizer struct {
-	input audit.ResponseFinalizationInput
-	err   error
+	input                 audit.ResponseFinalizationInput
+	err                   error
+	finalizeContextErr    error
+	postDispatchFailures  int
+	postDispatchAuditID   string
+	postDispatchRequestID string
 }
 
-func (fake *fakeResponseFinalizer) FinalizeResponse(_ context.Context, input audit.ResponseFinalizationInput) (audit.FinalizationReceipt, error) {
+func (fake *fakeResponseFinalizer) FinalizeResponse(ctx context.Context, input audit.ResponseFinalizationInput) (audit.FinalizationReceipt, error) {
 	fake.input = input
+	fake.finalizeContextErr = ctx.Err()
 	if fake.err != nil {
 		return audit.FinalizationReceipt{}, fake.err
 	}
 	return audit.FinalizationReceipt{AuditID: input.AuditID, RequestID: input.RequestID, CaptureStatus: input.CaptureStatus, Outcome: input.Outcome}, nil
+}
+
+func (fake *fakeResponseFinalizer) MarkPostDispatchFailure(_ context.Context, auditID, requestID, _ string, _ time.Time) error {
+	fake.postDispatchFailures++
+	fake.postDispatchAuditID = auditID
+	fake.postDispatchRequestID = requestID
+	return nil
 }
 
 type fakeUsageRepository struct {

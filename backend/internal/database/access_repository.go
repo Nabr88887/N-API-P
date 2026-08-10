@@ -79,6 +79,13 @@ SET failed_login_attempts = $1,
     updated_at = $4
 WHERE id = $5`
 
+const insertLoginLockoutEventSQL = `
+INSERT INTO security_events (
+    id, event_type, target_identity_id, request_id, outcome, detail_code, occurred_at
+) VALUES (
+    gen_random_uuid(), 'login_lockout', $1, gen_random_uuid(), 'success', 'account_locked', $2
+)`
+
 const resetLoginFailureSQL = `
 UPDATE identities
 SET failed_login_attempts = 0,
@@ -325,6 +332,11 @@ func (r *Repository) CompleteLogin(ctx context.Context, completion access.LoginC
 			attempts, nextStarted, nextLocked := access.AdvanceLoginFailure(failedAttempts, started, completion.AttemptedAt)
 			if _, err := tx.ExecContext(ctx, updateLoginFailureSQL, attempts, nextStarted, nextLocked, completion.AttemptedAt, completion.Candidate.IdentityID); err != nil {
 				return fmt.Errorf("record login failure: %w", err)
+			}
+			if nextLocked != nil {
+				if _, err := tx.ExecContext(ctx, insertLoginLockoutEventSQL, completion.Candidate.IdentityID, completion.AttemptedAt); err != nil {
+					return fmt.Errorf("append login lockout security event: %w", err)
+				}
 			}
 			return nil
 		}

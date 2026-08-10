@@ -136,6 +136,32 @@ func TestFinalizationFailurePersistsGateAfterClientCancellation(t *testing.T) {
 	}
 }
 
+func TestPostDispatchUsageFailureMarksAuditIncompleteAndBlocksLaterChat(t *testing.T) {
+	repository := &degradedRepositoryFake{}
+	gate, err := NewDegradedStateMachine(repository)
+	if err != nil {
+		t.Fatalf("NewDegradedStateMachine() error = %v", err)
+	}
+	now := time.Date(2026, 8, 5, 10, 0, 0, 0, time.UTC)
+	if err := gate.Recover(context.Background(), now.Add(-time.Hour), now); err != nil {
+		t.Fatalf("Recover() error = %v", err)
+	}
+	service, err := NewResponseFinalizationServiceWithGate(&countingEncryptor{}, repository, gate)
+	if err != nil {
+		t.Fatalf("NewResponseFinalizationServiceWithGate() error = %v", err)
+	}
+
+	if err := service.MarkPostDispatchFailure(context.Background(), "audit-usage", "request-usage", GateReasonUsagePersistence, now); err != nil {
+		t.Fatalf("MarkPostDispatchFailure() error = %v", err)
+	}
+	if repository.incompleteAuditID != "audit-usage" || repository.incompleteRequestID != "request-usage" || repository.blockReason != GateReasonUsagePersistence {
+		t.Fatalf("post-dispatch reconciliation = (%q, %q, %q)", repository.incompleteAuditID, repository.incompleteRequestID, repository.blockReason)
+	}
+	if err := gate.CheckChatAllowed(context.Background()); !errors.Is(err, ErrAuditUnavailable) {
+		t.Fatalf("CheckChatAllowed() after usage failure = %v, want ErrAuditUnavailable", err)
+	}
+}
+
 func TestRecoveryReconcilesBeforeOpeningGate(t *testing.T) {
 	repository := &degradedRepositoryFake{}
 	gate, err := NewDegradedStateMachine(repository)

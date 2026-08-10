@@ -32,6 +32,10 @@ type InitialCapture interface {
 	CaptureValidatedRequest(context.Context, audit.InitialCaptureInput) (audit.CaptureReceipt, error)
 }
 
+type PostDispatchFailureMarker interface {
+	MarkPostDispatchFailure(context.Context, string, string, string, time.Time) error
+}
+
 type ModelPolicy interface {
 	Authorize(context.Context, string) error
 }
@@ -407,9 +411,7 @@ func (handler *ChatProxyHandler) finalizeStreamFailure(caller ChatCaller, receip
 }
 
 func (handler *ChatProxyHandler) finalizeStream(caller ChatCaller, receipt audit.CaptureReceipt, model string, createdAt time.Time, body []byte, observed int64, response *NewAPIResponse, status audit.CaptureStatus, outcome audit.AuditOutcome, code string, tokenUsage *usage.TokenUsage, finishReason string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return handler.finalizerAndUsageWithFinish(ctx, caller, receipt, model, createdAt, body, observed, status, outcome, code, responseID(response), responseStatus(response), tokenUsage, finishReason)
+	return handler.finalizerAndUsageWithFinish(context.Background(), caller, receipt, model, createdAt, body, observed, status, outcome, code, responseID(response), responseStatus(response), tokenUsage, finishReason)
 }
 
 func primaryFinishReason(logical SSELogicalResponse) string {
@@ -434,6 +436,9 @@ func responseStatus(response *NewAPIResponse) *int {
 }
 
 func (handler *ChatProxyHandler) finalizeTransportFailure(ctx context.Context, caller ChatCaller, receipt audit.CaptureReceipt, model string, createdAt time.Time, err error) error {
+	if errors.Is(err, context.Canceled) {
+		return handler.finalizeLocalFailureWithCode(ctx, caller, receipt, model, createdAt, "CLIENT_DISCONNECTED", audit.AuditOutcomeCancelled)
+	}
 	code := string(upstreamErrorCode(err))
 	if code == string(httpapi.CodeUpstreamError) {
 		code = string(httpapi.CodeUpstreamUnavailable)
@@ -468,7 +473,12 @@ func (handler *ChatProxyHandler) finalizerAndUsage(ctx context.Context, caller C
 }
 
 func (handler *ChatProxyHandler) finalizerAndUsageWithFinish(ctx context.Context, caller ChatCaller, receipt audit.CaptureReceipt, model string, createdAt time.Time, body []byte, observed int64, status audit.CaptureStatus, outcome audit.AuditOutcome, errorCode, upstreamRequestID string, upstreamStatus *int, tokenUsage *usage.TokenUsage, finishReason string) error {
-	_, err := handler.finalizer.FinalizeResponse(ctx, audit.ResponseFinalizationInput{
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	persistenceCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	_, err := handler.finalizer.FinalizeResponse(persistenceCtx, audit.ResponseFinalizationInput{
 		AuditID: receipt.AuditID, RequestID: receipt.RequestID, OwnerKind: caller.OwnerKind,
 		IdentityID: caller.IdentityID, ServiceAccountID: caller.ServiceAccountID,
 		ResponsibleIdentityID: caller.ResponsibleIdentityID, TeamID: caller.TeamID, ModelID: model,
@@ -481,7 +491,7 @@ func (handler *ChatProxyHandler) finalizerAndUsageWithFinish(ctx context.Context
 	}
 	usageID, err := handler.newID()
 	if err != nil {
-		return ErrUsagePersistenceFailed
+		return handler.markUsagePersistenceFailure(persistenceCtx, receipt)
 	}
 	usageOutcome := usage.OutcomeLocalError
 	switch outcome {
@@ -500,12 +510,23 @@ func (handler *ChatProxyHandler) finalizerAndUsageWithFinish(ctx context.Context
 		Usage: tokenUsage, CreatedAt: createdAt,
 	})
 	if err != nil {
-		return ErrUsagePersistenceFailed
+		return handler.markUsagePersistenceFailure(persistenceCtx, receipt)
 	}
-	if err := handler.usage.CreateUsageRecord(ctx, record); err != nil {
-		return ErrUsagePersistenceFailed
+	if err := handler.usage.CreateUsageRecord(persistenceCtx, record); err != nil {
+		return handler.markUsagePersistenceFailure(persistenceCtx, receipt)
 	}
 	return nil
+}
+
+func (handler *ChatProxyHandler) markUsagePersistenceFailure(ctx context.Context, receipt audit.CaptureReceipt) error {
+	marker, ok := handler.finalizer.(PostDispatchFailureMarker)
+	if !ok {
+		return ErrUsagePersistenceFailed
+	}
+	if err := marker.MarkPostDispatchFailure(ctx, receipt.AuditID, receipt.RequestID, audit.GateReasonUsagePersistence, handler.now().UTC()); err != nil {
+		return errors.Join(ErrUsagePersistenceFailed, err)
+	}
+	return ErrUsagePersistenceFailed
 }
 
 func validateChatCompletionResponse(data []byte) (bool, *usage.TokenUsage) {
