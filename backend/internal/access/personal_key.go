@@ -11,6 +11,7 @@ import (
 )
 
 const MaxActivePersonalKeys = 5
+const MaxPersonalKeyPageSize = 100
 
 var (
 	ErrInvalidPersonalKeyName  = errors.New("invalid personal key name")
@@ -18,6 +19,7 @@ var (
 	ErrPersonalKeyLimitReached = errors.New("personal key active limit reached")
 	ErrPersonalKeyNotFound     = errors.New("personal key not found")
 	ErrInvalidAPIKey           = errors.New("invalid api key")
+	ErrInvalidPersonalKeyPage  = errors.New("invalid personal key page")
 )
 
 type PersonalKeyStatus string
@@ -134,6 +136,26 @@ type PersonalKeyRepository interface {
 	RecordPersonalKeyUse(context.Context, PersonalKeyUse) (AuthenticatedPersonalKey, error)
 }
 
+type PersonalKeyCursor struct {
+	CreatedAt time.Time
+	ID        string
+}
+
+type PersonalKeyPageRequest struct {
+	IdentityID string
+	Cursor     *PersonalKeyCursor
+	Limit      int
+}
+
+type PersonalKeyPage struct {
+	Keys       []PersonalKey
+	NextCursor *PersonalKeyCursor
+}
+
+type PersonalKeyPageRepository interface {
+	ListPersonalKeysPage(context.Context, string, *PersonalKeyCursor, int) ([]PersonalKey, error)
+}
+
 type PersonalKeyService struct {
 	repository PersonalKeyRepository
 	keys       *APIKeyGenerator
@@ -204,6 +226,31 @@ func (service *PersonalKeyService) List(ctx context.Context, identityID string) 
 		return nil, ErrForbidden
 	}
 	return service.repository.ListPersonalKeys(ctx, identityID)
+}
+
+func (service *PersonalKeyService) ListPage(ctx context.Context, request PersonalKeyPageRequest) (PersonalKeyPage, error) {
+	identityID := strings.TrimSpace(request.IdentityID)
+	if service == nil || service.repository == nil || identityID == "" {
+		return PersonalKeyPage{}, ErrForbidden
+	}
+	if request.Limit < 1 || request.Limit > MaxPersonalKeyPageSize {
+		return PersonalKeyPage{}, ErrInvalidPersonalKeyPage
+	}
+	pageRepository, ok := service.repository.(PersonalKeyPageRepository)
+	if !ok {
+		return PersonalKeyPage{}, ErrInvalidPersonalKeyPage
+	}
+	keys, err := pageRepository.ListPersonalKeysPage(ctx, identityID, request.Cursor, request.Limit+1)
+	if err != nil {
+		return PersonalKeyPage{}, err
+	}
+	page := PersonalKeyPage{Keys: keys}
+	if len(keys) > request.Limit {
+		page.Keys = keys[:request.Limit]
+		last := page.Keys[len(page.Keys)-1]
+		page.NextCursor = &PersonalKeyCursor{CreatedAt: last.CreatedAt, ID: last.ID}
+	}
+	return page, nil
 }
 
 func (service *PersonalKeyService) Revoke(ctx context.Context, input RevokePersonalKeyInput) error {

@@ -53,6 +53,23 @@ WHERE identity_id = $1
   AND kind = 'personal'
 ORDER BY created_at DESC, id DESC`
 
+const listPersonalKeysPageSQL = `
+SELECT
+    id::text,
+    identity_id::text,
+    name,
+    prefix,
+    status,
+    created_at,
+    last_used_at,
+    revoked_at
+FROM api_keys
+WHERE identity_id = $1
+  AND kind = 'personal'
+  AND ($2::timestamptz IS NULL OR (created_at, id) < ($2, $3::uuid))
+ORDER BY created_at DESC, id DESC
+LIMIT $4`
+
 const revokePersonalKeySQL = `
 UPDATE api_keys
 SET status = 'revoked',
@@ -165,6 +182,48 @@ func (r *Repository) ListPersonalKeys(ctx context.Context, identityID string) (k
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate personal keys: %w", err)
+	}
+	return keys, nil
+}
+
+func (r *Repository) ListPersonalKeysPage(ctx context.Context, identityID string, cursor *access.PersonalKeyCursor, limit int) (keys []access.PersonalKey, err error) {
+	if r == nil || r.db == nil || identityID == "" || limit < 1 || limit > access.MaxPersonalKeyPageSize+1 {
+		return nil, access.ErrInvalidPersonalKeyPage
+	}
+	var cursorTime any
+	var cursorID any
+	if cursor != nil {
+		cursorTime = cursor.CreatedAt
+		cursorID = cursor.ID
+	}
+	rows, err := r.db.QueryContext(ctx, listPersonalKeysPageSQL, identityID, cursorTime, cursorID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query personal key page: %w", err)
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close personal key page rows: %w", closeErr))
+		}
+	}()
+	keys = make([]access.PersonalKey, 0, limit)
+	for rows.Next() {
+		var key access.PersonalKey
+		var lastUsedAt, revokedAt sql.NullTime
+		if err := rows.Scan(&key.ID, &key.IdentityID, &key.Name, &key.Prefix, &key.Status, &key.CreatedAt, &lastUsedAt, &revokedAt); err != nil {
+			return nil, fmt.Errorf("scan personal key page: %w", err)
+		}
+		if lastUsedAt.Valid {
+			value := lastUsedAt.Time
+			key.LastUsedAt = &value
+		}
+		if revokedAt.Valid {
+			value := revokedAt.Time
+			key.RevokedAt = &value
+		}
+		keys = append(keys, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate personal key page: %w", err)
 	}
 	return keys, nil
 }

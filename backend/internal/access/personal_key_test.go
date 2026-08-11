@@ -138,6 +138,21 @@ func TestPersonalKeyServiceListsAndRevokesOnlyRequestedOwnerMetadata(t *testing.
 	}
 }
 
+func TestPersonalKeyServiceUsesBoundedCursorPagination(t *testing.T) {
+	repository := &personalKeyRepositoryFake{pageListed: []PersonalKey{
+		{ID: "key-2", IdentityID: "identity-1", CreatedAt: personalKeyTestTime},
+		{ID: "key-1", IdentityID: "identity-1", CreatedAt: personalKeyTestTime.Add(-time.Minute)},
+	}}
+	service := NewPersonalKeyService(repository)
+	page, err := service.ListPage(context.Background(), PersonalKeyPageRequest{IdentityID: " identity-1 ", Limit: 1})
+	if err != nil {
+		t.Fatalf("ListPage() error = %v", err)
+	}
+	if repository.pageIdentityID != "identity-1" || repository.pageLimit != 2 || len(page.Keys) != 1 || page.NextCursor == nil || page.NextCursor.ID != "key-2" {
+		t.Fatalf("ListPage() = %#v, repository request = (%q, %d)", page, repository.pageIdentityID, repository.pageLimit)
+	}
+}
+
 func TestPersonalKeyServiceAuthenticatesConstantTimeCandidateAndFailsClosedOnConcurrentRevocation(t *testing.T) {
 	secret := "nap_" + base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x61}, apiKeyRandomBytes))
 	hash := sha256.Sum256([]byte(secret))
@@ -178,6 +193,10 @@ type personalKeyRepositoryFake struct {
 	listed          []PersonalKey
 	listIdentityID  string
 	listErr         error
+	pageListed      []PersonalKey
+	pageIdentityID  string
+	pageCursor      *PersonalKeyCursor
+	pageLimit       int
 	revoked         PersonalKeyRevocation
 	revokeErr       error
 	candidatePrefix string
@@ -197,6 +216,13 @@ func (repository *personalKeyRepositoryFake) CreatePersonalKey(_ context.Context
 func (repository *personalKeyRepositoryFake) ListPersonalKeys(_ context.Context, identityID string) ([]PersonalKey, error) {
 	repository.listIdentityID = identityID
 	return repository.listed, repository.listErr
+}
+
+func (repository *personalKeyRepositoryFake) ListPersonalKeysPage(_ context.Context, identityID string, cursor *PersonalKeyCursor, limit int) ([]PersonalKey, error) {
+	repository.pageIdentityID = identityID
+	repository.pageCursor = cursor
+	repository.pageLimit = limit
+	return repository.pageListed, repository.listErr
 }
 
 func (repository *personalKeyRepositoryFake) RevokePersonalKey(_ context.Context, revocation PersonalKeyRevocation) error {

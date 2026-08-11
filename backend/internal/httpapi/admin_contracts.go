@@ -170,10 +170,11 @@ type ListTeamsRequest struct {
 }
 
 type TeamMember struct {
-	AccountID string    `json:"account_id"`
-	Email     string    `json:"email"`
-	Role      Role      `json:"role"`
-	JoinedAt  time.Time `json:"joined_at"`
+	AccountID string        `json:"account_id"`
+	Email     string        `json:"email"`
+	Role      Role          `json:"role"`
+	Status    AccountStatus `json:"status"`
+	JoinedAt  time.Time     `json:"joined_at"`
 }
 
 type AddTeamMemberRequest struct {
@@ -349,6 +350,20 @@ type ListUsageRequest struct {
 	ModelID   *string    `json:"model_id,omitempty"`
 	From      *time.Time `json:"from,omitempty"`
 	To        *time.Time `json:"to,omitempty"`
+}
+
+type TeamUsageAggregate struct {
+	RequestCount       int64 `json:"request_count"`
+	ReportedUsageCount int64 `json:"reported_usage_count"`
+	InputTokens        int64 `json:"input_tokens"`
+	OutputTokens       int64 `json:"output_tokens"`
+	TotalTokens        int64 `json:"total_tokens"`
+}
+
+type TeamUsageResponse struct {
+	Data       []UsageRecord      `json:"data"`
+	Pagination Pagination         `json:"pagination"`
+	Aggregate  TeamUsageAggregate `json:"aggregate"`
 }
 
 type AuditCaptureStatus string

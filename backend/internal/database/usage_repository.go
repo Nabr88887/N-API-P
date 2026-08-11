@@ -2,12 +2,101 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
-	"n-api-p/internal/usage"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"n-api-p/internal/usage"
 )
+
+type UsageCursor struct {
+	CreatedAt time.Time
+	ID        string
+}
+
+type UsageListFilter struct {
+	IdentityID string
+	Cursor     *UsageCursor
+	Limit      int
+}
+
+type UsageRecord struct {
+	ID               string
+	AuditID          string
+	RequestID        string
+	KeyID            string
+	IdentityID       string
+	ServiceAccountID sql.NullString
+	TeamID           string
+	ModelID          string
+	Outcome          string
+	UsageReported    bool
+	InputTokens      sql.NullInt64
+	OutputTokens     sql.NullInt64
+	TotalTokens      sql.NullInt64
+	PriceVersion     sql.NullString
+	CalculatedAmount sql.NullString
+	CreatedAt        time.Time
+}
+
+const listOwnUsageRecordsSQL = `
+SELECT id::text, audit_id::text, request_id::text, key_id::text,
+       identity_id::text, service_account_id::text, team_id::text, model_id, outcome, usage_reported,
+       input_tokens, output_tokens, total_tokens, price_version,
+       calculated_amount::text, created_at
+FROM usage_records
+WHERE identity_id = $1
+  AND owner_kind = 'personal'
+  AND ($2::timestamptz IS NULL OR (created_at, id) < ($2, $3::uuid))
+ORDER BY created_at DESC, id DESC
+LIMIT $4`
+
+func (r *Repository) ListUsageRecords(ctx context.Context, filter UsageListFilter) (records []UsageRecord, err error) {
+	if r == nil || r.db == nil || filter.IdentityID == "" || filter.Limit < 1 || filter.Limit > MaxPageSize+1 {
+		return nil, ErrInvalidPageSize
+	}
+	var cursorTime any
+	var cursorID any
+	if filter.Cursor != nil {
+		cursorTime = filter.Cursor.CreatedAt
+		cursorID = filter.Cursor.ID
+	}
+	rows, err := r.db.QueryContext(ctx, listOwnUsageRecordsSQL, filter.IdentityID, cursorTime, cursorID, filter.Limit)
+	if err != nil {
+		return nil, fmt.Errorf("query own usage records: %w", err)
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close own usage rows: %w", closeErr))
+		}
+	}()
+	for rows.Next() {
+		var record UsageRecord
+		if err := scanUsageRecord(rows, &record); err != nil {
+			return nil, fmt.Errorf("scan own usage record: %w", err)
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate own usage records: %w", err)
+	}
+	return records, nil
+}
+
+type usageRecordScanner interface {
+	Scan(...any) error
+}
+
+func scanUsageRecord(scanner usageRecordScanner, record *UsageRecord) error {
+	return scanner.Scan(&record.ID, &record.AuditID, &record.RequestID, &record.KeyID,
+		&record.IdentityID, &record.ServiceAccountID, &record.TeamID, &record.ModelID,
+		&record.Outcome, &record.UsageReported, &record.InputTokens,
+		&record.OutputTokens, &record.TotalTokens, &record.PriceVersion,
+		&record.CalculatedAmount, &record.CreatedAt)
+}
 
 const insertUsageRecordSQL = `
 INSERT INTO usage_records (
