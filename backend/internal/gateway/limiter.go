@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 	"unicode"
+
+	"n-api-p/internal/observability"
 )
 
 const (
@@ -80,6 +82,7 @@ type InProcessLimiter struct {
 	globalActive int
 	owners       map[TrafficOwner]*ownerLimitState
 	lastCleanup  time.Time
+	metrics      *observability.Metrics
 }
 
 // Token credit is stored as elapsed refill time so the 120/300 RPM rates remain
@@ -105,9 +108,14 @@ type inProcessReservation struct {
 }
 
 func NewInProcessLimiter() *InProcessLimiter {
+	return NewInProcessLimiterWithMetrics(nil)
+}
+
+func NewInProcessLimiterWithMetrics(metrics *observability.Metrics) *InProcessLimiter {
 	return &InProcessLimiter{
-		now:    time.Now,
-		owners: make(map[TrafficOwner]*ownerLimitState),
+		now:     time.Now,
+		owners:  make(map[TrafficOwner]*ownerLimitState),
+		metrics: metrics,
 	}
 }
 
@@ -116,20 +124,24 @@ func (limiter *InProcessLimiter) Acquire(ctx context.Context, owner TrafficOwner
 		return nil, ErrLimiterUnavailable
 	}
 	if err := validateTrafficOwner(owner); err != nil {
+		limiter.observe(owner, "rejected", "unknown")
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
+		limiter.observe(owner, "error", "unknown")
 		return nil, err
 	}
 
 	limiter.mu.Lock()
 	defer limiter.mu.Unlock()
 	if err := ctx.Err(); err != nil {
+		limiter.observe(owner, "error", "unknown")
 		return nil, err
 	}
 	now := limiter.now().UTC()
 	limiter.cleanupOwners(now)
 	if limiter.globalActive >= globalConcurrencyLimit {
+		limiter.observe(owner, "limited", string(LimitRuleGlobalConcurrency))
 		return nil, newRateLimitError(LimitRuleGlobalConcurrency, concurrencyRetryAfter)
 	}
 
@@ -143,16 +155,25 @@ func (limiter *InProcessLimiter) Acquire(ctx context.Context, owner TrafficOwner
 		state.lastSeen = latestTime(state.lastSeen, now)
 	}
 	if state.active >= limits.concurrency {
+		limiter.observe(owner, "limited", string(limits.concurrencyRule))
 		return nil, newRateLimitError(limits.concurrencyRule, concurrencyRetryAfter)
 	}
 	if state.credit < limits.interval {
+		limiter.observe(owner, "limited", string(limits.rpmRule))
 		return nil, newRateLimitError(limits.rpmRule, limits.interval-state.credit)
 	}
 
 	state.credit -= limits.interval
 	state.active++
 	limiter.globalActive++
+	limiter.observe(owner, "admitted", "unknown")
 	return &inProcessReservation{limiter: limiter, owner: owner}, nil
+}
+
+func (limiter *InProcessLimiter) observe(owner TrafficOwner, outcome, rule string) {
+	if limiter != nil && limiter.metrics != nil {
+		limiter.metrics.ObserveLimiter(string(owner.Kind), outcome, rule)
+	}
 }
 
 func (reservation *inProcessReservation) Release() {

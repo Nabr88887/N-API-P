@@ -10,6 +10,7 @@ import (
 
 	"n-api-p/internal/access"
 	"n-api-p/internal/database"
+	"n-api-p/internal/observability"
 )
 
 var (
@@ -134,7 +135,7 @@ func NewTeamPortalRouter(sessions PortalSessionService, allowedOrigin string, re
 	mux := http.NewServeMux()
 	mux.Handle("GET /api/v1/teams/{teamID}/members", guard.Wrap(memberRoute, NewTeamMembersHandler(reader)))
 	mux.Handle("GET /api/v1/teams/{teamID}/usage", guard.Wrap(usageRoute, NewTeamUsageHandler(reader)))
-	return middleware.Wrap(mux), nil
+	return observability.NewRequestIDMiddleware(middleware.Wrap(mux), observability.DefaultLogger()), nil
 }
 
 func teamViewSession(request *http.Request) (access.ActivePortalSession, bool) {

@@ -82,6 +82,7 @@ func TestServiceAccountServiceTrimsAndValidatesOwnerInvariant(t *testing.T) {
 		TeamID:                " team-1 ",
 		ResponsibleIdentityID: " employee-1 ",
 		Name:                  "  build-agent  ",
+		RequestID:             "request-service-account-create",
 	})
 	if err != nil {
 		t.Fatalf("valid Create() error = %v", err)
@@ -91,6 +92,11 @@ func TestServiceAccountServiceTrimsAndValidatesOwnerInvariant(t *testing.T) {
 	}
 	if repository.createdServiceAccount.Name != "build-agent" || repository.createdServiceAccount.TeamID != "team-1" || repository.createdServiceAccount.ResponsibleIdentityID != "employee-1" {
 		t.Fatalf("repository received invalid service-account record: %#v", repository.createdServiceAccount)
+	}
+	if event := repository.createdServiceAccount.Event; event.EventType != "service_account_created" ||
+		event.ActorIdentityID != "admin-1" || event.TargetServiceAccountID != account.ID ||
+		event.RequestID != "request-service-account-create" || event.Outcome != SecurityEventSuccess {
+		t.Fatalf("service-account creation event = %+v", event)
 	}
 }
 

@@ -53,6 +53,7 @@ type CreateServiceAccountInput struct {
 	TeamID                string
 	ResponsibleIdentityID string
 	Name                  string
+	RequestID             string
 }
 
 type ServiceAccountRecord struct {
@@ -62,6 +63,7 @@ type ServiceAccountRecord struct {
 	Name                  string
 	CreatedByIdentityID   string
 	CreatedAt             time.Time
+	Event                 SecurityEvent
 }
 
 type CreateServiceAccountKeyInput struct {
@@ -260,9 +262,22 @@ func (service *ServiceAccountService) Create(ctx context.Context, input CreateSe
 		return ServiceAccount{}, err
 	}
 	createdAt := service.now().UTC()
+	eventID, err := service.newID()
+	if err != nil {
+		return ServiceAccount{}, err
+	}
+	requestID, err := credentialLifecycleRequestID(input.RequestID)
+	if err != nil {
+		return ServiceAccount{}, ErrInvalidServiceAccount
+	}
 	if err := service.repository.CreateServiceAccount(ctx, ServiceAccountRecord{
 		ID: id, TeamID: teamID, ResponsibleIdentityID: responsibleIdentityID, Name: name,
 		CreatedByIdentityID: strings.TrimSpace(input.Actor.IdentityID), CreatedAt: createdAt,
+		Event: SecurityEvent{
+			ID: eventID, EventType: "service_account_created", ActorIdentityID: strings.TrimSpace(input.Actor.IdentityID),
+			TargetServiceAccountID: id, RequestID: requestID, Outcome: SecurityEventSuccess,
+			DetailCode: "active", OccurredAt: createdAt,
+		},
 	}); err != nil {
 		return ServiceAccount{}, err
 	}

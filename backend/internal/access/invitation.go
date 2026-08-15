@@ -50,9 +50,10 @@ type Actor struct {
 }
 
 type CreateInvitationInput struct {
-	Actor  Actor
-	Email  string
-	TeamID string
+	Actor     Actor
+	Email     string
+	TeamID    string
+	RequestID string
 }
 
 type Invitation struct {
@@ -60,6 +61,7 @@ type Invitation struct {
 	Email           string
 	ActivationValue string
 	ExpiresAt       time.Time
+	CreatedAt       time.Time
 }
 
 type InvitationRecord struct {
@@ -73,6 +75,7 @@ type InvitationRecord struct {
 	ExpiresAt          time.Time
 	IssuedByIdentityID string
 	CreatedAt          time.Time
+	Event              SecurityEvent
 }
 
 // InvitationRepository atomically creates the pending identity, its team
@@ -122,6 +125,14 @@ func (service *InvitationService) Create(ctx context.Context, input CreateInvita
 	if err != nil {
 		return Invitation{}, fmt.Errorf("generate activation ID: %w", err)
 	}
+	eventID, err := service.newID()
+	if err != nil {
+		return Invitation{}, fmt.Errorf("generate invitation event ID: %w", err)
+	}
+	requestID, err := credentialLifecycleRequestID(input.RequestID)
+	if err != nil {
+		return Invitation{}, ErrInvalidInvitation
+	}
 
 	err = service.repository.CreateInvitation(ctx, InvitationRecord{
 		IdentityID:         identityID,
@@ -134,6 +145,11 @@ func (service *InvitationService) Create(ctx context.Context, input CreateInvita
 		ExpiresAt:          expiresAt,
 		IssuedByIdentityID: input.Actor.IdentityID,
 		CreatedAt:          createdAt,
+		Event: SecurityEvent{
+			ID: eventID, EventType: "invitation_issued", ActorIdentityID: strings.TrimSpace(input.Actor.IdentityID),
+			TargetIdentityID: identityID, RequestID: requestID, Outcome: SecurityEventSuccess,
+			DetailCode: "pending_employee", OccurredAt: createdAt,
+		},
 	})
 	if errors.Is(err, ErrEmailAlreadyExists) {
 		return Invitation{}, ErrEmailAlreadyExists
@@ -147,6 +163,7 @@ func (service *InvitationService) Create(ctx context.Context, input CreateInvita
 		Email:           email,
 		ActivationValue: activationValue,
 		ExpiresAt:       expiresAt,
+		CreatedAt:       createdAt,
 	}, nil
 }
 
@@ -195,6 +212,7 @@ type ActivationRecord struct {
 	ActivationHash []byte
 	PasswordHash   string
 	ActivatedAt    time.Time
+	Event          SecurityEvent
 }
 
 // ActivationRepository cheaply prevalidates an activation value before password
@@ -221,10 +239,11 @@ type ActivationService struct {
 	passwords  PasswordInitializer
 	limiter    ActivationAttemptLimiter
 	now        func() time.Time
+	newID      func() (string, error)
 }
 
 func NewActivationService(repository ActivationRepository, passwords PasswordInitializer, limiter ActivationAttemptLimiter) *ActivationService {
-	return &ActivationService{repository: repository, passwords: passwords, limiter: limiter, now: time.Now}
+	return &ActivationService{repository: repository, passwords: passwords, limiter: limiter, now: time.Now, newID: newIdentityID}
 }
 
 func (service *ActivationService) Activate(ctx context.Context, input ActivateInput) error {
@@ -256,6 +275,10 @@ func (service *ActivationService) Activate(ctx context.Context, input ActivateIn
 	if err != nil || passwordHash == "" {
 		return ErrPasswordInitializationFailed
 	}
+	eventID, err := service.newID()
+	if err != nil {
+		return fmt.Errorf("generate activation event ID: %w", err)
+	}
 
 	err = service.repository.ActivateIdentity(ctx, ActivationRecord{
 		Candidate:      candidate,
@@ -263,6 +286,10 @@ func (service *ActivationService) Activate(ctx context.Context, input ActivateIn
 		ActivationHash: activationHash[:],
 		PasswordHash:   passwordHash,
 		ActivatedAt:    attemptedAt,
+		Event: SecurityEvent{
+			ID: eventID, EventType: "activation_completed", TargetIdentityID: candidate.IdentityID,
+			RequestID: eventID, Outcome: SecurityEventSuccess, DetailCode: "account_activated", OccurredAt: attemptedAt,
+		},
 	})
 	if errors.Is(err, ErrActivationRejected) {
 		return ErrActivationRejected

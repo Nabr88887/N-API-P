@@ -77,7 +77,8 @@ func TestOffboardingRepositoryDisablesTeamWithinItsCredentialBoundary(t *testing
 	insertOffboardingSession(t, db, offboardingTargetSessionID, accessEmployeeID)
 
 	service := access.NewOffboardingService(repository)
-	if err := service.DisableTeam(context.Background(), access.DisableTeamInput{Actor: actor, TeamID: accessTeamID}); err != nil {
+	const requestID = "87000000-0000-0000-0000-000000000201"
+	if err := service.DisableTeam(context.Background(), access.DisableTeamInput{Actor: actor, TeamID: accessTeamID, RequestID: requestID}); err != nil {
 		t.Fatalf("DisableTeam() error = %v", err)
 	}
 
@@ -86,6 +87,13 @@ func TestOffboardingRepositoryDisablesTeamWithinItsCredentialBoundary(t *testing
 	assertOffboardingKeyStatus(t, db, otherKey.Key.ID, "active")
 	assertOffboardingKeyStatus(t, db, personal.Key.ID, "active")
 	assertOffboardingSessionRevoked(t, db, offboardingTargetSessionID, false)
+	var eventType, reason string
+	if err := db.QueryRow(`SELECT event_type, reason FROM security_events WHERE request_id = $1 AND event_type = 'team_disabled'`, requestID).Scan(&eventType, &reason); err != nil {
+		t.Fatalf("query team disable event: %v", err)
+	}
+	if eventType != "team_disabled" || reason != accessTeamID {
+		t.Fatalf("team disable event = (%q, %q), want (team_disabled, %q)", eventType, reason, accessTeamID)
+	}
 	if _, err := access.NewServiceAccountService(repository).Authenticate(context.Background(), targetSecret); !errors.Is(err, access.ErrInvalidAPIKey) {
 		t.Fatalf("disabled team Authenticate() error = %v, want ErrInvalidAPIKey", err)
 	}
@@ -94,6 +102,35 @@ func TestOffboardingRepositoryDisablesTeamWithinItsCredentialBoundary(t *testing
 	}
 	if _, err := access.NewPersonalKeyService(repository).Authenticate(context.Background(), personalSecret); err != nil {
 		t.Fatalf("team member personal Authenticate() error = %v", err)
+	}
+}
+
+func TestOffboardingRepositoryRollsBackTeamWhenFinalSecurityEventFails(t *testing.T) {
+	db, _ := migrateWorkforceSchema(t)
+	seedAccessOwners(t, db)
+	mustExec(t, db, `INSERT INTO memberships (identity_id, team_id) VALUES ($1, $2)`, accessEmployeeID, accessTeamID)
+	repository := NewRepository(db)
+	actor := access.Actor{IdentityID: accessAdminID, Role: access.RoleSystemAdministrator}
+	_, targetKey, targetSecret := createOffboardingServiceKey(t, repository, actor, accessTeamID, accessEmployeeID, "team-event-rollback")
+	mustExec(t, db, `CREATE FUNCTION reject_team_disabled_event() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.event_type = 'team_disabled' THEN RAISE EXCEPTION 'synthetic team disable event failure'; END IF; RETURN NEW; END $$`)
+	mustExec(t, db, `CREATE TRIGGER reject_team_disabled_event BEFORE INSERT ON security_events FOR EACH ROW EXECUTE FUNCTION reject_team_disabled_event()`)
+
+	const requestID = "87000000-0000-0000-0000-000000000202"
+	service := access.NewOffboardingService(repository)
+	if err := service.DisableTeam(context.Background(), access.DisableTeamInput{Actor: actor, TeamID: accessTeamID, RequestID: requestID}); err == nil {
+		t.Fatal("DisableTeam() with rejected final security event succeeded")
+	}
+	assertOffboardingTeamStatus(t, db, accessTeamID, "active")
+	assertOffboardingKeyStatus(t, db, targetKey.Key.ID, "active")
+	if _, err := access.NewServiceAccountService(repository).Authenticate(context.Background(), targetSecret); err != nil {
+		t.Fatalf("rolled-back team credential Authenticate() error = %v", err)
+	}
+	var eventCount int
+	if err := db.QueryRow(`SELECT count(*) FROM security_events WHERE request_id = $1`, requestID).Scan(&eventCount); err != nil {
+		t.Fatalf("count rolled-back team disable events: %v", err)
+	}
+	if eventCount != 0 {
+		t.Fatalf("rolled-back team disable retained %d security events", eventCount)
 	}
 }
 

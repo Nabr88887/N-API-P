@@ -217,6 +217,11 @@ func TestActivationConsumesValueOnceAndRevokesSiblingValues(t *testing.T) {
 	if repository.codesByIdentity[identityID][1].RevokedAt == nil {
 		t.Fatal("sibling activation value was not revoked")
 	}
+	if event := repository.activation.Event; event.EventType != "activation_completed" ||
+		event.TargetIdentityID != identityID || event.Outcome != SecurityEventSuccess ||
+		event.RequestID == "" || !event.OccurredAt.Equal(fixedNow) {
+		t.Fatalf("activation completion event = %+v", event)
+	}
 
 	for _, attempt := range []Invitation{
 		first,
@@ -342,6 +347,7 @@ type memoryAccessRepository struct {
 	memberships     map[string]string
 	codesByIdentity map[string][]*memoryActivationCode
 	ownedResources  map[string][]string
+	activation      ActivationRecord
 	createErr       error
 }
 
@@ -386,6 +392,7 @@ func (repository *memoryAccessRepository) PrepareActivation(_ context.Context, l
 }
 
 func (repository *memoryAccessRepository) ActivateIdentity(_ context.Context, record ActivationRecord) error {
+	repository.activation = record
 	identity, ok := repository.identities[record.Candidate.IdentityID]
 	if !ok || identity.Status != IdentityStatusPending || identity.Email != record.Email {
 		return ErrActivationRejected

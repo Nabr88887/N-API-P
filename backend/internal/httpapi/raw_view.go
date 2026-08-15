@@ -5,12 +5,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
 	"strings"
 
 	"n-api-p/internal/access"
 	"n-api-p/internal/audit"
+	"n-api-p/internal/observability"
 )
 
 type RawViewInspector interface {
@@ -45,7 +45,9 @@ func NewRawViewHandler(service RawViewInspector) http.Handler {
 		writer.Header().Set("Content-Type", "application/json")
 		writer.Header().Set("Cache-Control", "no-store")
 		if err := json.NewEncoder(writer).Encode(view); err != nil {
-			slog.Warn("write raw audit view response failed", "error", err)
+			_ = observability.DefaultLogger().Emit(observability.LogEvent{
+				Level: observability.LevelError, Event: "http_error_response_write_failed",
+			})
 		}
 	})
 }

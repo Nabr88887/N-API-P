@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"n-api-p/internal/access"
+	"n-api-p/internal/observability"
 )
 
 const (
@@ -176,6 +176,10 @@ func writeErrorResponse(writer http.ResponseWriter, code ErrorCode) {
 	writer.Header().Set("Cache-Control", "no-store")
 	writer.WriteHeader(status)
 	if err := json.NewEncoder(writer).Encode(response); err != nil {
-		slog.Warn("write API error response failed", "error", err)
+		if logErr := observability.DefaultLogger().Emit(observability.LogEvent{
+			Level: observability.LevelError, Event: "http_error_response_write_failed",
+		}); logErr != nil {
+			return
+		}
 	}
 }

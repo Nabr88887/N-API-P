@@ -159,7 +159,7 @@ func (r *Repository) DisableEmployee(ctx context.Context, record access.Employee
 		if _, err := tx.ExecContext(ctx, revokeResponsibleServiceAccountKeysSQL, record.DisabledAt, record.IdentityID, record.ActorIdentityID, record.RequestID); err != nil {
 			return fmt.Errorf("revoke responsible employee service account keys: %w", err)
 		}
-		return nil
+		return appendOffboardingEvent(ctx, tx, "employee_disabled", record.ActorIdentityID, record.IdentityID, "", record.RequestID, "", record.DisabledAt)
 	})
 }
 
@@ -177,7 +177,7 @@ func (r *Repository) DisableTeam(ctx context.Context, record access.TeamDisablem
 		if _, err := tx.ExecContext(ctx, revokeTeamServiceAccountKeysSQL, record.DisabledAt, record.TeamID, record.ActorIdentityID, record.RequestID); err != nil {
 			return fmt.Errorf("revoke team service account keys: %w", err)
 		}
-		return nil
+		return appendOffboardingEvent(ctx, tx, "team_disabled", record.ActorIdentityID, "", "", record.RequestID, record.TeamID, record.DisabledAt)
 	})
 }
 
@@ -195,8 +195,24 @@ func (r *Repository) DisableServiceAccount(ctx context.Context, record access.Se
 		if _, err := tx.ExecContext(ctx, revokeDisabledServiceAccountKeysSQL, record.DisabledAt, record.ServiceAccountID, record.ActorIdentityID, record.RequestID); err != nil {
 			return fmt.Errorf("revoke disabled service account keys: %w", err)
 		}
-		return nil
+		return appendOffboardingEvent(ctx, tx, "service_account_disabled", record.ActorIdentityID, "", record.ServiceAccountID, record.RequestID, "", record.DisabledAt)
 	})
+}
+
+const insertOffboardingEventSQL = `
+INSERT INTO security_events (
+    id, event_type, actor_identity_id, target_identity_id, target_service_account_id,
+    request_id, outcome, reason, detail_code, occurred_at
+) VALUES (
+    gen_random_uuid(), $1, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid, NULLIF($4, '')::uuid,
+    $5, 'success', NULLIF($6, ''), 'offboarding_complete', $7
+)`
+
+func appendOffboardingEvent(ctx context.Context, tx *sql.Tx, eventType, actorIdentityID, targetIdentityID, targetServiceAccountID, requestID, reason string, occurredAt time.Time) error {
+	if _, err := tx.ExecContext(ctx, insertOffboardingEventSQL, eventType, actorIdentityID, targetIdentityID, targetServiceAccountID, requestID, reason, occurredAt.UTC()); err != nil {
+		return fmt.Errorf("append offboarding event: %w", err)
+	}
+	return nil
 }
 
 func lockActiveOffboardingTarget(ctx context.Context, tx *sql.Tx, query, targetID, kind string) error {

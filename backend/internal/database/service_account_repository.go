@@ -188,7 +188,7 @@ func (r *Repository) CreateServiceAccount(ctx context.Context, record access.Ser
 			}
 			return fmt.Errorf("insert service account: %w", err)
 		}
-		return nil
+		return appendSecurityEventTx(ctx, tx, record.Event)
 	})
 }
 

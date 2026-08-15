@@ -97,7 +97,7 @@ func TestAccessRepositoryPrevalidatesAndConsumesActivationOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareActivation() error = %v", err)
 	}
-	activation := access.ActivationRecord{Candidate: candidate, Email: record.Email, ActivationHash: record.ActivationHash, PasswordHash: "encoded-password-hash", ActivatedAt: accessNow}
+	activation := activationRecord(candidate, record.Email, record.ActivationHash, "encoded-password-hash", "62000000-0000-0000-0000-000000000020", accessNow)
 	errorsByCall := runConcurrent(2, func(int) error {
 		return repository.ActivateIdentity(context.Background(), activation)
 	})
@@ -135,8 +135,8 @@ func TestAccessRepositoryConsumesOnlyOneOfConcurrentSiblingActivations(t *testin
 		t.Fatalf("PrepareActivation() sibling error = %v", err)
 	}
 	activations := []access.ActivationRecord{
-		{Candidate: firstCandidate, Email: record.Email, ActivationHash: record.ActivationHash, PasswordHash: "first-password-hash", ActivatedAt: accessNow},
-		{Candidate: siblingCandidate, Email: record.Email, ActivationHash: siblingHash, PasswordHash: "sibling-password-hash", ActivatedAt: accessNow},
+		activationRecord(firstCandidate, record.Email, record.ActivationHash, "first-password-hash", "62000000-0000-0000-0000-000000000022", accessNow),
+		activationRecord(siblingCandidate, record.Email, siblingHash, "sibling-password-hash", "62000000-0000-0000-0000-000000000023", accessNow),
 	}
 	errorsByCall := runConcurrent(2, func(index int) error {
 		return repository.ActivateIdentity(context.Background(), activations[index])
@@ -160,9 +160,7 @@ func TestAccessRepositorySerializesActivationAndEmailChange(t *testing.T) {
 
 	errorsByCall := runConcurrent(2, func(index int) error {
 		if index == 0 {
-			return repository.ActivateIdentity(context.Background(), access.ActivationRecord{
-				Candidate: candidate, Email: record.Email, ActivationHash: record.ActivationHash, PasswordHash: "encoded-password-hash", ActivatedAt: accessNow,
-			})
+			return repository.ActivateIdentity(context.Background(), activationRecord(candidate, record.Email, record.ActivationHash, "encoded-password-hash", "62000000-0000-0000-0000-000000000024", accessNow))
 		}
 		return repository.ChangeIdentityEmail(context.Background(), access.EmailChangeRecord{
 			IdentityID: record.IdentityID, Email: "changed@example.internal", ChangedByIdentityID: accessAdminID, ChangedAt: accessNow,
@@ -175,6 +173,35 @@ func TestAccessRepositorySerializesActivationAndEmailChange(t *testing.T) {
 		t.Fatalf("concurrent ActivateIdentity() error = %v, want nil or ErrActivationRejected", errorsByCall[0])
 	}
 	assertActivationEmailChangeOutcome(t, db, record.IdentityID, record.ActivationID, errorsByCall[0])
+}
+
+func TestAccessRepositoryRollsBackActivationWhenCompletionEventFails(t *testing.T) {
+	db, _ := migrateWorkforceSchema(t)
+	seedAccessOwners(t, db)
+	repository := NewRepository(db)
+	record := accessInvitationRecord("22000000-0000-0000-0000-000000000025", "32000000-0000-0000-0000-000000000025", "audit-rollback@example.internal")
+	if err := repository.CreateInvitation(context.Background(), record); err != nil {
+		t.Fatalf("CreateInvitation() error = %v", err)
+	}
+	candidate, err := repository.PrepareActivation(context.Background(), access.ActivationLookup{Email: record.Email, ActivationHash: record.ActivationHash, CheckedAt: accessNow})
+	if err != nil {
+		t.Fatalf("PrepareActivation() error = %v", err)
+	}
+	activation := activationRecord(candidate, record.Email, record.ActivationHash, "rolled-back-password", "not-a-uuid", accessNow)
+	if err := repository.ActivateIdentity(context.Background(), activation); err == nil {
+		t.Fatal("ActivateIdentity() with invalid security event succeeded")
+	}
+	var status string
+	var codeUsed bool
+	if err := db.QueryRow(`SELECT status FROM identities WHERE id = $1`, record.IdentityID).Scan(&status); err != nil {
+		t.Fatalf("query rolled-back activation identity: %v", err)
+	}
+	if err := db.QueryRow(`SELECT used_at IS NOT NULL FROM one_time_codes WHERE id = $1`, record.ActivationID).Scan(&codeUsed); err != nil {
+		t.Fatalf("query rolled-back activation code: %v", err)
+	}
+	if status != "pending" || codeUsed {
+		t.Fatalf("activation event failure left status/code = %q/%t, want pending/unused", status, codeUsed)
+	}
 }
 
 func TestAccessRepositoryChangesEmailInPlaceAndRevokesOldCodes(t *testing.T) {
@@ -230,6 +257,14 @@ func accessInvitationRecord(identityID, activationID, email string) access.Invit
 		IdentityID: identityID, ActivationID: activationID, Email: email, Role: access.RoleEmployee,
 		Status: access.IdentityStatusPending, TeamID: accessTeamID, ActivationHash: []byte("activation-hash-" + identityID),
 		ExpiresAt: accessNow.Add(time.Hour), IssuedByIdentityID: accessAdminID, CreatedAt: accessNow.Add(-time.Hour),
+		Event: access.SecurityEvent{ID: activationID, EventType: "invitation_issued", ActorIdentityID: accessAdminID, TargetIdentityID: identityID, RequestID: activationID, Outcome: access.SecurityEventSuccess, DetailCode: "pending_employee", OccurredAt: accessNow.Add(-time.Hour)},
+	}
+}
+
+func activationRecord(candidate access.ActivationCandidate, email string, hash []byte, passwordHash, eventID string, activatedAt time.Time) access.ActivationRecord {
+	return access.ActivationRecord{
+		Candidate: candidate, Email: email, ActivationHash: hash, PasswordHash: passwordHash, ActivatedAt: activatedAt,
+		Event: access.SecurityEvent{ID: eventID, EventType: "activation_completed", TargetIdentityID: candidate.IdentityID, RequestID: eventID, Outcome: access.SecurityEventSuccess, DetailCode: "account_activated", OccurredAt: activatedAt},
 	}
 }
 

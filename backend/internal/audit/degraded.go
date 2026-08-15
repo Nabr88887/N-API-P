@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"n-api-p/internal/observability"
 )
 
 var (
@@ -63,6 +65,7 @@ type PostDispatchFailureGate interface {
 type DegradedStateMachine struct {
 	repository DegradedRepository
 	now        func() time.Time
+	metrics    *observability.Metrics
 
 	mu     sync.RWMutex
 	status AuditGateSnapshot
@@ -106,6 +109,15 @@ func (machine *DegradedStateMachine) CheckChatAllowed(ctx context.Context) error
 		return ErrAuditUnavailable
 	}
 	return nil
+}
+
+func (machine *DegradedStateMachine) SetMetrics(metrics *observability.Metrics) {
+	if machine != nil {
+		machine.metrics = metrics
+		if metrics != nil {
+			metrics.SetAuditGateState(string(machine.Status().State))
+		}
+	}
 }
 
 func (machine *DegradedStateMachine) Block(ctx context.Context, reason string) error {
@@ -164,6 +176,9 @@ func (machine *DegradedStateMachine) Recover(ctx context.Context, staleBefore, o
 	machine.mu.Lock()
 	machine.status = AuditGateSnapshot{State: AuditGateStateOpen, ChangedAt: openedAt.UTC(), LastPersistenceProbeAt: timePtr(openedAt.UTC())}
 	machine.mu.Unlock()
+	if machine.metrics != nil {
+		machine.metrics.SetAuditGateState(string(AuditGateStateOpen))
+	}
 	return nil
 }
 
@@ -188,6 +203,9 @@ func (machine *DegradedStateMachine) setBlocked(reason string, changedAt time.Ti
 	machine.mu.Lock()
 	machine.status = AuditGateSnapshot{State: AuditGateStateBlocked, ReasonCode: reason, ChangedAt: changedAt.UTC()}
 	machine.mu.Unlock()
+	if machine.metrics != nil {
+		machine.metrics.SetAuditGateState(string(AuditGateStateBlocked))
+	}
 }
 
 func validateGateReason(reason string) error {

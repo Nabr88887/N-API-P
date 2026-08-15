@@ -184,6 +184,11 @@ func TestPasswordResetCompletionPreservesKeysForRoutineAndRevokesThemForCompromi
 			if repository.completion.PasswordHash != "hashed:new-password" || repository.completion.PasswordHash == "new-password" {
 				t.Fatalf("completion persisted plaintext password or wrong hash: %q", repository.completion.PasswordHash)
 			}
+			if event := repository.completion.Event; event.EventType != "password_reset_completed" ||
+				event.TargetIdentityID != "employee-1" || event.Outcome != SecurityEventSuccess ||
+				event.RequestID == "" || !event.OccurredAt.Equal(fixedNow) {
+				t.Fatalf("password reset completion event = %+v", event)
+			}
 		})
 	}
 }

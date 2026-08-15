@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 
 	"n-api-p/internal/access"
+	"n-api-p/internal/observability"
 )
 
 type PasswordResetCodeIssuer interface {
@@ -43,6 +43,7 @@ func NewPasswordResetCodeHandler(service PasswordResetCodeIssuer) http.Handler {
 		issued, err := service.IssueCode(request.Context(), access.PasswordResetIssueInput{
 			Actor: session, TargetIdentityID: targetID, TargetEmail: body.Email,
 			ManualIdentityVerified: body.ManualIdentityVerified, CompromiseResponse: body.CompromiseResponse,
+			RequestID: adminRequestID(request),
 		})
 		if errors.Is(err, access.ErrForbidden) {
 			writeErrorResponse(writer, CodeForbidden)
@@ -72,7 +73,9 @@ func NewPasswordResetCodeHandler(service PasswordResetCodeIssuer) http.Handler {
 			Email     string `json:"email"`
 			ExpiresAt string `json:"expires_at"`
 		}{Code: issued.Code, Email: issued.Email, ExpiresAt: issued.ExpiresAt.UTC().Format("2006-01-02T15:04:05.999999999Z07:00")}); err != nil {
-			slog.Warn("write password reset issuance response failed", "error", err)
+			_ = observability.DefaultLogger().Emit(observability.LogEvent{
+				Level: observability.LevelError, Event: "http_error_response_write_failed",
+			})
 		}
 	})
 }

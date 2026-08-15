@@ -13,6 +13,7 @@ import (
 
 	"n-api-p/internal/audit"
 	"n-api-p/internal/httpapi"
+	"n-api-p/internal/observability"
 	"n-api-p/internal/policy"
 	"n-api-p/internal/usage"
 )
@@ -46,6 +47,28 @@ func TestChatProxyHandlerProxiesSuccessAndLinksAuditUsage(t *testing.T) {
 	}
 	if usageRepo.record.AuditID != "generated-id" || usageRepo.record.RequestID != "request-1" || usageRepo.record.UpstreamRequestID != "upstream-1" || usageRepo.record.Outcome != usage.OutcomeSuccess || usageRepo.record.Usage == nil || usageRepo.record.Usage.TotalTokens != 5 {
 		t.Fatalf("usage record = %+v, want exact audit/upstream linkage", usageRepo.record)
+	}
+}
+
+func TestChatProxyHandlerUsesGatewayRequestIDForAuditAndUsage(t *testing.T) {
+	const requestID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	body := []byte(`{"model":"gpt-test","messages":[{"role":"user","content":"hello"}]}`)
+	responseBody := []byte(`{"id":"chatcmpl-request-id","model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`)
+	upstream := &fakeChatUpstream{response: &NewAPIResponse{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(responseBody))}}
+	capture := &fakeInitialCapture{receipt: audit.CaptureReceipt{AuditID: "generated-id", RequestID: requestID}}
+	finalizer := &fakeResponseFinalizer{}
+	usageRepo := &fakeUsageRepository{}
+	handler := newTestChatProxyHandler(t, upstream, capture, finalizer, usageRepo, nil)
+	request := proxyRequest(t, body, "")
+	request.Header.Set(observability.RequestIDHeader, requestID)
+	recorder := httptest.NewRecorder()
+	observability.NewRequestIDMiddleware(handler, nil).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK || recorder.Header().Get(observability.RequestIDHeader) != requestID {
+		t.Fatalf("response = (%d, request_id=%q), want 200 and %q", recorder.Code, recorder.Header().Get(observability.RequestIDHeader), requestID)
+	}
+	if capture.input.RequestID != requestID || finalizer.input.RequestID != requestID || usageRepo.record.RequestID != requestID {
+		t.Fatalf("request IDs = capture %q, finalizer %q, usage %q; want %q", capture.input.RequestID, finalizer.input.RequestID, usageRepo.record.RequestID, requestID)
 	}
 }
 

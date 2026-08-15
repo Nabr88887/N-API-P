@@ -3,8 +3,6 @@ package gateway
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -15,6 +13,7 @@ import (
 
 	"n-api-p/internal/audit"
 	"n-api-p/internal/httpapi"
+	"n-api-p/internal/observability"
 	"n-api-p/internal/policy"
 	"n-api-p/internal/usage"
 )
@@ -76,6 +75,7 @@ type ChatProxyConfig struct {
 	NewID         func() (string, error)
 	Retention     time.Duration
 	ResponseLimit int64
+	Metrics       *observability.Metrics
 }
 
 type ChatProxyHandler struct {
@@ -89,6 +89,7 @@ type ChatProxyHandler struct {
 	newID         func() (string, error)
 	retention     time.Duration
 	responseLimit int64
+	metrics       *observability.Metrics
 }
 
 func NewChatProxyHandler(config ChatProxyConfig) (*ChatProxyHandler, error) {
@@ -121,7 +122,14 @@ func NewChatProxyHandler(config ChatProxyConfig) (*ChatProxyHandler, error) {
 		upstream: config.Upstream, capture: config.Capture, finalizer: config.Finalizer,
 		usage: config.Usage, policy: config.Policy, limiter: config.Limiter, now: now,
 		newID: newID, retention: retention, responseLimit: responseLimit,
+		metrics: config.Metrics,
 	}, nil
+}
+
+func (handler *ChatProxyHandler) SetMetrics(metrics *observability.Metrics) {
+	if handler != nil {
+		handler.metrics = metrics
+	}
 }
 
 func (handler *ChatProxyHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -133,7 +141,14 @@ func (handler *ChatProxyHandler) ServeHTTP(writer http.ResponseWriter, request *
 		return
 	}
 	caller, ok := chatCallerFromContext(request.Context())
-	if !ok || !validChatCaller(caller) {
+	if !ok {
+		writeChatError(writer, httpapi.CodeInvalidAPIKey)
+		return
+	}
+	if requestID, ok := observability.RequestIDFromContext(request.Context()); ok {
+		caller.RequestID = requestID
+	}
+	if !validChatCaller(caller) {
 		writeChatError(writer, httpapi.CodeInvalidAPIKey)
 		return
 	}
@@ -305,9 +320,7 @@ func (handler *ChatProxyHandler) ServeHTTP(writer http.ResponseWriter, request *
 		return
 	}
 	writer.Header().Set("Content-Type", "application/json")
-	if upstreamResponse.RequestID != "" {
-		writer.Header().Set("X-Request-ID", upstreamResponse.RequestID)
-	}
+	setRequestIDHeader(writer, request, upstreamResponse.RequestID)
 	writer.WriteHeader(upstreamResponse.StatusCode)
 	_, _ = writer.Write(responseBody)
 }
@@ -350,9 +363,7 @@ func (handler *ChatProxyHandler) serveStreaming(writer http.ResponseWriter, requ
 						return
 					}
 					writer.Header().Set("Content-Type", "application/json")
-					if upstreamResponse.RequestID != "" {
-						writer.Header().Set("X-Request-ID", upstreamResponse.RequestID)
-					}
+					setRequestIDHeader(writer, request, upstreamResponse.RequestID)
 					writer.WriteHeader(upstreamResponse.StatusCode)
 					_, _ = writer.Write(bounded.Content())
 					return
@@ -366,9 +377,7 @@ func (handler *ChatProxyHandler) serveStreaming(writer http.ResponseWriter, requ
 	defer upstreamResponse.Body.Close()
 	writer.Header().Set("Content-Type", "text/event-stream")
 	writer.Header().Set("Cache-Control", "no-cache")
-	if upstreamResponse.RequestID != "" {
-		writer.Header().Set("X-Request-ID", upstreamResponse.RequestID)
-	}
+	setRequestIDHeader(writer, request, upstreamResponse.RequestID)
 	flusher, _ := writer.(http.Flusher)
 	started := false
 	logical, parseErr := ReadSSEStream(upstreamResponse.Body, handler.responseLimit, func(event SSEEvent) error {
@@ -491,6 +500,7 @@ func (handler *ChatProxyHandler) finalizerAndUsageWithFinish(ctx context.Context
 	}
 	usageID, err := handler.newID()
 	if err != nil {
+		handler.observeUsagePersistence("failure")
 		return handler.markUsagePersistenceFailure(persistenceCtx, receipt)
 	}
 	usageOutcome := usage.OutcomeLocalError
@@ -510,12 +520,21 @@ func (handler *ChatProxyHandler) finalizerAndUsageWithFinish(ctx context.Context
 		Usage: tokenUsage, CreatedAt: createdAt,
 	})
 	if err != nil {
+		handler.observeUsagePersistence("failure")
 		return handler.markUsagePersistenceFailure(persistenceCtx, receipt)
 	}
 	if err := handler.usage.CreateUsageRecord(persistenceCtx, record); err != nil {
+		handler.observeUsagePersistence("failure")
 		return handler.markUsagePersistenceFailure(persistenceCtx, receipt)
 	}
+	handler.observeUsagePersistence("success")
 	return nil
+}
+
+func (handler *ChatProxyHandler) observeUsagePersistence(outcome string) {
+	if handler != nil && handler.metrics != nil {
+		handler.metrics.ObserveAuditPersistence("usage", outcome)
+	}
 }
 
 func (handler *ChatProxyHandler) markUsagePersistenceFailure(ctx context.Context, receipt audit.CaptureReceipt) error {
@@ -679,11 +698,19 @@ func writeChatEnvelope(writer http.ResponseWriter, status int, envelope httpapi.
 }
 
 func newChatRequestID() (string, error) {
-	var value [16]byte
-	if _, err := rand.Read(value[:]); err != nil {
-		return "", err
+	return observability.NewRequestID()
+}
+
+func setRequestIDHeader(writer http.ResponseWriter, request *http.Request, upstreamRequestID string) {
+	if request != nil {
+		if requestID, ok := observability.RequestIDFromContext(request.Context()); ok {
+			writer.Header().Set(observability.RequestIDHeader, requestID)
+			return
+		}
 	}
-	return hex.EncodeToString(value[:]), nil
+	if upstreamRequestID != "" {
+		writer.Header().Set(observability.RequestIDHeader, upstreamRequestID)
+	}
 }
 
 var _ ChatUpstream = (*NewAPIClient)(nil)

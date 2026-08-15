@@ -11,6 +11,7 @@ import (
 
 	"n-api-p/internal/access"
 	"n-api-p/internal/database"
+	"n-api-p/internal/observability"
 )
 
 func TestPersonalKeyCreateUsesAuthenticatedIdentityAndRevealsCredentialOnce(t *testing.T) {
@@ -21,9 +22,10 @@ func TestPersonalKeyCreateUsesAuthenticatedIdentityAndRevealsCredentialOnce(t *t
 	handler := withEmployeeSession(NewPersonalKeyCreateHandler(service), access.ActivePortalSession{IdentityID: "session-owner", SessionID: "session-1"})
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/me/personal-keys", bytes.NewBufferString(`{"name":"laptop"}`))
+	request.Header.Set(observability.RequestIDHeader, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 	handler.ServeHTTP(recorder, request)
 
-	if recorder.Code != http.StatusCreated || service.createInput.IdentityID != "session-owner" {
+	if recorder.Code != http.StatusCreated || service.createInput.IdentityID != "session-owner" || service.createInput.RequestID != "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" {
 		t.Fatalf("create result = (%d, %#v), want authenticated owner", recorder.Code, service.createInput)
 	}
 	var response KeyIssuance
@@ -43,10 +45,11 @@ func TestPersonalKeyRevokeRejectsForeignResourceWithoutCallingOwnerOverride(t *t
 	handler := withEmployeeSession(NewPersonalKeyRevokeHandler(service), access.ActivePortalSession{IdentityID: "session-owner", SessionID: "session-1"})
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodDelete, "/api/v1/me/personal-keys/foreign-key", nil)
+	request.Header.Set(observability.RequestIDHeader, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
 	handler.ServeHTTP(recorder, request)
 
 	assertHTTPError(t, recorder, http.StatusNotFound, CodeNotFound)
-	if service.revokeInput.IdentityID != "session-owner" || service.revokeInput.KeyID != "foreign-key" {
+	if service.revokeInput.IdentityID != "session-owner" || service.revokeInput.KeyID != "foreign-key" || service.revokeInput.RequestID != "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" {
 		t.Fatalf("revoke input = %#v, want session-owned target", service.revokeInput)
 	}
 }

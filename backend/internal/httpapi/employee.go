@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,6 +13,7 @@ import (
 
 	"n-api-p/internal/access"
 	"n-api-p/internal/database"
+	"n-api-p/internal/observability"
 )
 
 type EmployeePersonalKeyService interface {
@@ -75,7 +75,7 @@ func NewPersonalKeyCreateHandler(service interface {
 			return
 		}
 		issuance, err := service.Create(request.Context(), access.CreatePersonalKeyInput{
-			IdentityID: session.IdentityID, Name: input.Name,
+			IdentityID: session.IdentityID, Name: input.Name, RequestID: adminRequestID(request),
 		})
 		if err != nil {
 			writeEmployeeError(writer, err)
@@ -104,7 +104,7 @@ func NewPersonalKeyRevokeHandler(service interface {
 			writeErrorResponse(writer, CodeNotFound)
 			return
 		}
-		if err := service.Revoke(request.Context(), access.RevokePersonalKeyInput{IdentityID: session.IdentityID, KeyID: keyID}); err != nil {
+		if err := service.Revoke(request.Context(), access.RevokePersonalKeyInput{IdentityID: session.IdentityID, KeyID: keyID, RequestID: adminRequestID(request)}); err != nil {
 			writeEmployeeError(writer, err)
 			return
 		}
@@ -201,7 +201,7 @@ func NewEmployeePortalRouter(sessions PortalSessionService, allowedOrigin string
 	mux.Handle("POST /api/v1/me/personal-keys", guard.Wrap(createRoute, NewPersonalKeyCreateHandler(keys)))
 	mux.Handle("DELETE /api/v1/me/personal-keys/{keyID}", guard.Wrap(revokeRoute, NewPersonalKeyRevokeHandler(keys)))
 	mux.Handle("GET /api/v1/me/usage", guard.Wrap(usageRoute, NewOwnUsageHandler(usage)))
-	return middleware.Wrap(mux), nil
+	return observability.NewRequestIDMiddleware(middleware.Wrap(mux), observability.DefaultLogger()), nil
 }
 
 func routeByNameValue(name RouteName) Route {
@@ -336,7 +336,9 @@ func writeJSON(writer http.ResponseWriter, status int, value any) {
 	writer.Header().Set("Cache-Control", "no-store")
 	writer.WriteHeader(status)
 	if err := json.NewEncoder(writer).Encode(value); err != nil {
-		slog.Warn("write employee API response failed", "error", err)
+		_ = observability.DefaultLogger().Emit(observability.LogEvent{
+			Level: observability.LevelError, Event: "http_error_response_write_failed",
+		})
 	}
 }
 

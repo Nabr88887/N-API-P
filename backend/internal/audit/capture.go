@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"n-api-p/internal/observability"
 )
 
 var (
@@ -139,6 +141,7 @@ type ResponseFinalizationService struct {
 	encryptor  ContentEncryptor
 	repository FinalAuditRepository
 	gate       FailureGate
+	metrics    *observability.Metrics
 }
 
 func NewResponseFinalizationService(encryptor ContentEncryptor, repository FinalAuditRepository) (*ResponseFinalizationService, error) {
@@ -150,6 +153,12 @@ func NewResponseFinalizationServiceWithGate(encryptor ContentEncryptor, reposito
 		return nil, ErrInvalidFinalization
 	}
 	return &ResponseFinalizationService{encryptor: encryptor, repository: repository, gate: gate}, nil
+}
+
+func (service *ResponseFinalizationService) SetMetrics(metrics *observability.Metrics) {
+	if service != nil {
+		service.metrics = metrics
+	}
 }
 
 func (service *ResponseFinalizationService) FinalizeResponse(ctx context.Context, input ResponseFinalizationInput) (FinalizationReceipt, error) {
@@ -175,6 +184,7 @@ func (service *ResponseFinalizationService) FinalizeResponse(ctx context.Context
 	if len(input.ResponseJSON) > 0 {
 		encrypted, err := service.encryptor.Encrypt(input.ResponseJSON, encryptionContext)
 		if err != nil {
+			service.observePersistence("finalization", "failure")
 			failureErr := fmt.Errorf("%w: encrypt final response: %w", ErrAuditUnavailable, err)
 			if gateErr := service.markFinalizationFailure(ctx, input); gateErr != nil {
 				return FinalizationReceipt{}, errors.Join(failureErr, gateErr)
@@ -198,13 +208,21 @@ func (service *ResponseFinalizationService) FinalizeResponse(ctx context.Context
 		ObservedResponseBytes: input.ObservedResponseBytes, CreatedAt: input.CreatedAt, CompletedAt: input.CompletedAt,
 	}
 	if err := service.repository.FinalizeAudit(ctx, record); err != nil {
+		service.observePersistence("finalization", "failure")
 		failureErr := fmt.Errorf("%w: persist final audit response: %w", ErrAuditUnavailable, err)
 		if gateErr := service.markFinalizationFailure(ctx, input); gateErr != nil {
 			return FinalizationReceipt{}, errors.Join(failureErr, gateErr)
 		}
 		return FinalizationReceipt{}, failureErr
 	}
+	service.observePersistence("finalization", "success")
 	return FinalizationReceipt{AuditID: input.AuditID, RequestID: input.RequestID, CaptureStatus: input.CaptureStatus, Outcome: input.Outcome}, nil
+}
+
+func (service *ResponseFinalizationService) observePersistence(operation, outcome string) {
+	if service != nil && service.metrics != nil {
+		service.metrics.ObserveAuditPersistence(operation, outcome)
+	}
 }
 
 func (service *ResponseFinalizationService) markFinalizationFailure(ctx context.Context, input ResponseFinalizationInput) error {
@@ -346,6 +364,7 @@ type InitialCaptureService struct {
 	repository  PendingAuditRepository
 	gate        ChatGate
 	failureGate FailureGate
+	metrics     *observability.Metrics
 }
 
 func NewInitialCaptureService(encryptor RequestEncryptor, repository PendingAuditRepository) (*InitialCaptureService, error) {
@@ -361,6 +380,12 @@ func NewInitialCaptureServiceWithGate(encryptor RequestEncryptor, repository Pen
 		service.failureGate = failureGate
 	}
 	return service, nil
+}
+
+func (service *InitialCaptureService) SetMetrics(metrics *observability.Metrics) {
+	if service != nil {
+		service.metrics = metrics
+	}
 }
 
 func (service *InitialCaptureService) CaptureValidatedRequest(ctx context.Context, input InitialCaptureInput) (CaptureReceipt, error) {
@@ -387,6 +412,7 @@ func (service *InitialCaptureService) CaptureValidatedRequest(ctx context.Contex
 		CreatedAt:             input.CreatedAt,
 	})
 	if err != nil {
+		service.observePersistence("initial_capture", "failure")
 		failureErr := fmt.Errorf("%w: encrypt validated request: %w", ErrAuditUnavailable, err)
 		if gateErr := service.markInitialFailure(ctx); gateErr != nil {
 			return CaptureReceipt{}, errors.Join(failureErr, gateErr)
@@ -415,13 +441,21 @@ func (service *InitialCaptureService) CaptureValidatedRequest(ctx context.Contex
 		RequestContent:        encrypted,
 	}
 	if err := service.repository.CreatePendingAudit(ctx, record); err != nil {
+		service.observePersistence("initial_capture", "failure")
 		failureErr := fmt.Errorf("%w: persist pending audit: %w", ErrAuditUnavailable, err)
 		if gateErr := service.markInitialFailure(ctx); gateErr != nil {
 			return CaptureReceipt{}, errors.Join(failureErr, gateErr)
 		}
 		return CaptureReceipt{}, failureErr
 	}
+	service.observePersistence("initial_capture", "success")
 	return CaptureReceipt{AuditID: record.ID, RequestID: record.RequestID}, nil
+}
+
+func (service *InitialCaptureService) observePersistence(operation, outcome string) {
+	if service != nil && service.metrics != nil {
+		service.metrics.ObserveAuditPersistence(operation, outcome)
+	}
 }
 
 func (service *InitialCaptureService) markInitialFailure(ctx context.Context) error {

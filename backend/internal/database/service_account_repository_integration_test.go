@@ -228,9 +228,25 @@ func TestServiceAccountRepositorySerializesDuplicateNamesAndThreeKeyLimit(t *tes
 	}
 }
 
+func TestServiceAccountRepositoryRollsBackCreationWhenSecurityEventFails(t *testing.T) {
+	db, _ := migrateWorkforceSchema(t)
+	seedAccessOwners(t, db)
+	mustExec(t, db, `INSERT INTO memberships (identity_id, team_id) VALUES ($1, $2)`, accessEmployeeID, accessTeamID)
+	repository := NewRepository(db)
+	mustExec(t, db, `CREATE FUNCTION reject_service_account_creation_event() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.event_type = 'service_account_created' THEN RAISE EXCEPTION 'synthetic service account event failure'; END IF; RETURN NEW; END $$`)
+	mustExec(t, db, `CREATE TRIGGER reject_service_account_creation_event BEFORE INSERT ON security_events FOR EACH ROW EXECUTE FUNCTION reject_service_account_creation_event()`)
+
+	record := serviceAccountRecord("31000000-0000-0000-0000-000000000006", "rollback-agent")
+	if err := repository.CreateServiceAccount(context.Background(), record); err == nil {
+		t.Fatal("CreateServiceAccount() with rejected security event succeeded")
+	}
+	assertCountWhere(t, db, "service_accounts", "id", record.ID, 0)
+}
+
 func serviceAccountRecord(id, name string) access.ServiceAccountRecord {
 	return access.ServiceAccountRecord{
 		ID: id, TeamID: accessTeamID, ResponsibleIdentityID: accessEmployeeID,
 		Name: name, CreatedByIdentityID: accessAdminID, CreatedAt: accessNow,
+		Event: access.SecurityEvent{ID: id, EventType: "service_account_created", ActorIdentityID: accessAdminID, TargetServiceAccountID: id, RequestID: id, Outcome: access.SecurityEventSuccess, DetailCode: "active", OccurredAt: accessNow},
 	}
 }

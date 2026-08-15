@@ -525,6 +525,9 @@ func (r *Repository) IssuePasswordResetCode(ctx context.Context, record access.P
 		); err != nil {
 			return fmt.Errorf("insert password reset code: %w", err)
 		}
+		if err := appendSecurityEventTx(ctx, tx, record.Event); err != nil {
+			return err
+		}
 		return nil
 	})
 }
@@ -604,7 +607,7 @@ func (r *Repository) CompletePasswordReset(ctx context.Context, record access.Pa
 		if _, err := tx.ExecContext(ctx, revokeSiblingPasswordResetCodesSQL, record.ResetAt, record.IdentityID, record.CodeID); err != nil {
 			return fmt.Errorf("revoke sibling password reset codes: %w", err)
 		}
-		return nil
+		return appendSecurityEventTx(ctx, tx, record.Event)
 	})
 }
 
@@ -654,6 +657,9 @@ func (r *Repository) CreateInvitation(ctx context.Context, record access.Invitat
 			record.IssuedByIdentityID,
 		); err != nil {
 			return fmt.Errorf("insert activation code: %w", err)
+		}
+		if err := appendSecurityEventTx(ctx, tx, record.Event); err != nil {
+			return err
 		}
 		return nil
 	})
@@ -803,7 +809,7 @@ func (r *Repository) ActivateIdentity(ctx context.Context, record access.Activat
 		); err != nil {
 			return fmt.Errorf("revoke sibling activation codes: %w", err)
 		}
-		return nil
+		return appendSecurityEventTx(ctx, tx, record.Event)
 	})
 }
 
