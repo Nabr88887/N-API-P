@@ -83,7 +83,7 @@ func TestRawViewDeniesEmployeesTeamsStaleGrantsAndBlankReasonsBeforeLookup(t *te
 			if len(repository.lookups) != 0 {
 				t.Fatalf("denied request performed raw lookups: %+v", repository.lookups)
 			}
-			if len(repository.events) != 1 || repository.events[0].Outcome != access.SecurityEventDenied || repository.events[0].DetailCode != test.detail || repository.events[0].TargetAuditID != "" {
+			if len(repository.events) != 1 || repository.events[0].Outcome != access.SecurityEventDenied || repository.events[0].DetailCode != test.detail || repository.events[0].TargetAuditID != "audit-1" {
 				t.Fatalf("denied events = %+v", repository.events)
 			}
 		})

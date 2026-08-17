@@ -85,7 +85,7 @@ export function TeamWorkspace({ section, teamID, client }: TeamWorkspaceProps) {
   }
 
   if (!teamID) return <p className="error-state" role="alert">No assigned team is available for this session.</p>
-  if (loading) return <p className="loading-state">Loading team data...</p>
+  if (loading) return <p className="loading-state">Loading team data…</p>
   if (error) return <p className="error-state" role="alert">{error}</p>
 
   if (section === 'Team members') {
@@ -94,7 +94,7 @@ export function TeamWorkspace({ section, teamID, client }: TeamWorkspaceProps) {
         <div className="section-heading-row">
           <div><p className="section-kicker">Read-only directory</p><h2 id="team-members-title">Team members</h2></div>
         </div>
-        <div className="table-wrap">
+        <div className="table-wrap" tabIndex={0}>
           <table aria-label="Team members">
             <thead><tr><th scope="col">Email</th><th scope="col">Role</th><th scope="col">Status</th><th scope="col">Joined</th></tr></thead>
             <tbody>{members.length ? members.map((member) => (
@@ -118,7 +118,7 @@ export function TeamWorkspace({ section, teamID, client }: TeamWorkspaceProps) {
         <article className="metric-card metric-card-blue"><p>Total tokens</p><strong>{aggregate.total_tokens.toLocaleString()}</strong><span>{aggregate.reported_usage_count.toLocaleString()} records reported usage</span></article>
         <article className="metric-card metric-card-amber"><p>Input / output</p><strong>{aggregate.input_tokens.toLocaleString()}</strong><span>{aggregate.output_tokens.toLocaleString()} output tokens</span></article>
       </section>
-      <div className="table-wrap">
+      <div className="table-wrap" tabIndex={0}>
         <table aria-label="Team usage records">
           <thead><tr><th scope="col">When</th><th scope="col">Owner</th><th scope="col">Model</th><th scope="col">Outcome</th><th scope="col">Tokens</th></tr></thead>
           <tbody>{usage.length ? usage.map((record) => (

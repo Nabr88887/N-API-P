@@ -14,6 +14,7 @@ func TestRepositoryAuditGatePersistsFailureAndRecoversAfterReconciliation(t *tes
 	fixture := insertAuditPolicyFixture(t, db)
 	repository := NewRepository(db)
 	completedAt := fixture.now.Add(time.Minute)
+	mustExec(t, db, `UPDATE operational_state SET audit_gate_state = 'open', audit_gate_reason_code = NULL WHERE id = 1`)
 
 	if err := repository.MarkAuditIncompleteAndBlock(context.Background(), fixture.auditID, fixture.requestID, audit.GateReasonFinalizationPersistence, completedAt); err != nil {
 		t.Fatalf("MarkAuditIncompleteAndBlock() error = %v", err)
@@ -53,6 +54,31 @@ func TestRepositoryAuditGatePersistsFailureAndRecoversAfterReconciliation(t *tes
 	}
 	if open.State != audit.AuditGateStateOpen || open.ReasonCode != "" || open.LastPersistenceProbeAt == nil || !open.LastPersistenceProbeAt.Equal(openedAt) {
 		t.Fatalf("open gate = %+v, want open with probe timestamp", open)
+	}
+	rows, err := db.Query(`SELECT outcome, detail_code, occurred_at FROM security_events WHERE event_type = 'operational_fault' ORDER BY occurred_at`)
+	if err != nil {
+		t.Fatalf("query audit operational events: %v", err)
+	}
+	defer rows.Close()
+	var events []struct {
+		outcome, detail string
+		occurredAt      time.Time
+	}
+	for rows.Next() {
+		var event struct {
+			outcome, detail string
+			occurredAt      time.Time
+		}
+		if err := rows.Scan(&event.outcome, &event.detail, &event.occurredAt); err != nil {
+			t.Fatalf("scan audit operational event: %v", err)
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate audit operational events: %v", err)
+	}
+	if len(events) != 2 || events[0].outcome != "failure" || events[0].detail != "audit_unavailable" || !events[0].occurredAt.Equal(completedAt) || events[1].outcome != "success" || events[1].detail != "audit_unavailable" || !events[1].occurredAt.Equal(openedAt) {
+		t.Fatalf("audit operational events = %#v", events)
 	}
 }
 

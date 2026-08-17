@@ -1,3 +1,5 @@
+import { currentCSRFToken, rememberCSRFToken } from './portal-session'
+
 export type Pagination = {
   next_cursor?: string
   has_more: boolean
@@ -57,15 +59,13 @@ export class PortalAPIError extends Error {
 }
 
 export function createEmployeePortalClient(): EmployeePortalClient {
-  let csrfToken = ''
-
   async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(init.headers)
     if (init.body !== undefined) headers.set('Content-Type', 'application/json')
-    if (init.method && init.method !== 'GET' && csrfToken) headers.set('X-CSRF-Token', csrfToken)
+	const csrfToken = currentCSRFToken()
+	if (init.method && init.method !== 'GET' && csrfToken) headers.set('X-CSRF-Token', csrfToken)
     const response = await fetch(path, { ...init, headers, credentials: 'same-origin' })
-    const rotatedCSRF = response.headers.get('X-CSRF-Token')
-    if (rotatedCSRF) csrfToken = rotatedCSRF
+	rememberCSRFToken(response.headers.get('X-CSRF-Token'))
     if (!response.ok) {
       let code = 'INTERNAL_ERROR'
       try {

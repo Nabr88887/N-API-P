@@ -115,9 +115,10 @@ type CompleteActivationRequest struct {
 }
 
 type UpdateAccountRequest struct {
-	Email  *string        `json:"email,omitempty"`
-	Role   *Role          `json:"role,omitempty"`
-	Status *AccountStatus `json:"status,omitempty"`
+	Email     *string        `json:"email,omitempty"`
+	Role      *Role          `json:"role,omitempty"`
+	Status    *AccountStatus `json:"status,omitempty"`
+	Confirmed bool           `json:"confirmed,omitempty"`
 }
 
 type IssuePasswordResetRequest struct {
@@ -160,8 +161,9 @@ type CreateTeamRequest struct {
 }
 
 type UpdateTeamRequest struct {
-	Name   *string     `json:"name,omitempty"`
-	Status *TeamStatus `json:"status,omitempty"`
+	Name      *string     `json:"name,omitempty"`
+	Status    *TeamStatus `json:"status,omitempty"`
+	Confirmed bool        `json:"confirmed,omitempty"`
 }
 
 type ListTeamsRequest struct {
@@ -253,8 +255,9 @@ type ServiceAccount struct {
 }
 
 type UpdateServiceAccountRequest struct {
-	Name   *string               `json:"name,omitempty"`
-	Status *ServiceAccountStatus `json:"status,omitempty"`
+	Name      *string               `json:"name,omitempty"`
+	Status    *ServiceAccountStatus `json:"status,omitempty"`
+	Confirmed bool                  `json:"confirmed,omitempty"`
 }
 
 type ListServiceAccountsRequest struct {
@@ -268,7 +271,8 @@ type CreateServiceKeyRequest struct {
 }
 
 type RotateServiceKeyRequest struct {
-	Name string `json:"name"`
+	Name      string `json:"name"`
+	Confirmed bool   `json:"confirmed"`
 }
 
 type ListKeysRequest struct {
@@ -303,7 +307,8 @@ type ListModelsRequest struct {
 }
 
 type ReplaceModelAllowlistRequest struct {
-	Models []Model `json:"models"`
+	Models    []Model `json:"models"`
+	Confirmed bool    `json:"confirmed"`
 }
 
 type ModelAllowlistResponse struct {

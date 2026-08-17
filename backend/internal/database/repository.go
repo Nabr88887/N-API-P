@@ -3,13 +3,18 @@ package database
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"n-api-p/internal/audit"
+	"n-api-p/internal/operations"
+	"strings"
 	"time"
 )
 
 const MaxPageSize = 100
+const maxAuditQuerySize = MaxPageSize + 1
 
 var ErrInvalidPageSize = errors.New("page size must be between 1 and 100")
 
@@ -89,8 +94,40 @@ WHERE ($1::uuid IS NULL OR identity_id = $1)
 ORDER BY created_at DESC, id DESC
 LIMIT $7`
 
+const getAuditRecordSQL = `
+SELECT
+    id::text,
+    request_id::text,
+    key_id::text,
+    owner_kind,
+    identity_id::text,
+    service_account_id::text,
+    responsible_identity_id::text,
+    team_id::text,
+    model_id,
+    capture_status,
+    outcome,
+    upstream_request_id,
+    upstream_http_status,
+    error_code,
+    finish_reason,
+    observed_request_bytes,
+    observed_response_bytes,
+    created_at,
+    updated_at,
+    completed_at
+FROM audit_records
+WHERE id = $1`
+
 func (r *Repository) ListAuditRecords(ctx context.Context, filter AuditListFilter) (records []AuditRecord, err error) {
 	if filter.Limit < 1 || filter.Limit > MaxPageSize {
+		return nil, ErrInvalidPageSize
+	}
+	return r.listAuditRecords(ctx, filter)
+}
+
+func (r *Repository) listAuditRecords(ctx context.Context, filter AuditListFilter) (records []AuditRecord, err error) {
+	if filter.Limit < 1 || filter.Limit > maxAuditQuerySize {
 		return nil, ErrInvalidPageSize
 	}
 
@@ -154,6 +191,131 @@ func (r *Repository) ListAuditRecords(ctx context.Context, filter AuditListFilte
 	}
 	return records, nil
 }
+
+func (r *Repository) ListAuditMetadata(ctx context.Context, filter audit.MetadataFilter) (audit.MetadataPage, error) {
+	if filter.Limit < 1 || filter.Limit > audit.MaxMetadataPageSize {
+		return audit.MetadataPage{}, audit.ErrInvalidMetadataRequest
+	}
+	cursor, err := decodeAuditMetadataCursor(filter.Cursor)
+	if err != nil {
+		return audit.MetadataPage{}, audit.ErrInvalidMetadataRequest
+	}
+	databaseFilter := AuditListFilter{
+		IdentityID: filter.IdentityID, TeamID: filter.TeamID, ModelID: filter.ModelID,
+		Cursor: cursor, Limit: filter.Limit + 1,
+	}
+	if filter.CaptureStatus != nil {
+		value := string(*filter.CaptureStatus)
+		databaseFilter.CaptureStatus = &value
+	}
+	records, err := r.listAuditRecords(ctx, databaseFilter)
+	if err != nil {
+		return audit.MetadataPage{}, err
+	}
+	page := audit.MetadataPage{Records: make([]audit.Metadata, 0, min(len(records), filter.Limit))}
+	for index, record := range records {
+		if index == filter.Limit {
+			last := records[index-1]
+			page.NextCursor = encodeAuditMetadataCursor(AuditCursor{CreatedAt: last.CreatedAt, ID: last.ID})
+			break
+		}
+		page.Records = append(page.Records, auditMetadata(record))
+	}
+	return page, nil
+}
+
+func (r *Repository) GetAuditMetadata(ctx context.Context, auditID string) (audit.Metadata, error) {
+	record, err := scanAuditRecord(r.db.QueryRowContext(ctx, getAuditRecordSQL, auditID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return audit.Metadata{}, audit.ErrMetadataNotFound
+	}
+	if err != nil {
+		return audit.Metadata{}, fmt.Errorf("get audit metadata: %w", err)
+	}
+	return auditMetadata(record), nil
+}
+
+type auditRecordScanner interface {
+	Scan(...any) error
+}
+
+func scanAuditRecord(scanner auditRecordScanner) (AuditRecord, error) {
+	var record AuditRecord
+	err := scanner.Scan(
+		&record.ID, &record.RequestID, &record.KeyID, &record.OwnerKind,
+		&record.IdentityID, &record.ServiceAccountID, &record.ResponsibleIdentityID,
+		&record.TeamID, &record.ModelID, &record.CaptureStatus, &record.Outcome,
+		&record.UpstreamRequestID, &record.UpstreamHTTPStatus, &record.ErrorCode,
+		&record.FinishReason, &record.ObservedRequestBytes, &record.ObservedResponseBytes,
+		&record.CreatedAt, &record.UpdatedAt, &record.CompletedAt,
+	)
+	return record, err
+}
+
+func auditMetadata(record AuditRecord) audit.Metadata {
+	metadata := audit.Metadata{
+		ID: record.ID, RequestID: record.RequestID, KeyID: record.KeyID, OwnerKind: audit.OwnerKind(record.OwnerKind),
+		IdentityID: record.IdentityID.String, ServiceAccountID: record.ServiceAccountID.String,
+		ResponsibleIdentityID: record.ResponsibleIdentityID.String, TeamID: record.TeamID, ModelID: record.ModelID,
+		CaptureStatus: audit.CaptureStatus(record.CaptureStatus), Outcome: audit.AuditOutcome(record.Outcome),
+		UpstreamRequestID: record.UpstreamRequestID.String, ErrorCode: record.ErrorCode.String,
+		FinishReason: record.FinishReason.String, ObservedRequestBytes: record.ObservedRequestBytes,
+		ObservedResponseBytes: record.ObservedResponseBytes, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt,
+	}
+	if record.UpstreamHTTPStatus.Valid {
+		value := int(record.UpstreamHTTPStatus.Int64)
+		metadata.UpstreamHTTPStatus = &value
+	}
+	if record.CompletedAt.Valid {
+		value := record.CompletedAt.Time
+		metadata.CompletedAt = &value
+	}
+	return metadata
+}
+
+func encodeAuditMetadataCursor(cursor AuditCursor) string {
+	payload, _ := json.Marshal(cursor)
+	return base64.RawURLEncoding.EncodeToString(payload)
+}
+
+func decodeAuditMetadataCursor(value string) (*AuditCursor, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	if len(value) > 512 {
+		return nil, audit.ErrInvalidMetadataRequest
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return nil, audit.ErrInvalidMetadataRequest
+	}
+	var cursor AuditCursor
+	if err := json.Unmarshal(payload, &cursor); err != nil || cursor.CreatedAt.IsZero() || !validAuditMetadataUUID(cursor.ID) {
+		return nil, audit.ErrInvalidMetadataRequest
+	}
+	return &cursor, nil
+}
+
+func validAuditMetadataUUID(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for index, character := range value {
+		if index == 8 || index == 13 || index == 18 || index == 23 {
+			if character != '-' {
+				return false
+			}
+			continue
+		}
+		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f') || (character >= 'A' && character <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+var _ audit.MetadataRepository = (*Repository)(nil)
 
 const insertPendingAuditSQL = `
 INSERT INTO audit_records (
@@ -234,6 +396,12 @@ const readAuditGateSQL = `
 SELECT audit_gate_state, audit_gate_reason_code, gate_changed_at, last_persistence_probe_at
 FROM operational_state
 WHERE id = 1`
+
+const lockAuditGateStateSQL = `
+SELECT audit_gate_state
+FROM operational_state
+WHERE id = 1
+FOR UPDATE`
 
 const blockAuditGateSQL = `
 UPDATE operational_state
@@ -427,21 +595,30 @@ func (r *Repository) ReadAuditGate(ctx context.Context) (audit.AuditGateSnapshot
 	return snapshot, nil
 }
 
-func (r *Repository) BlockAuditGate(ctx context.Context, reason string, changedAt time.Time) error {
+func (r *Repository) BlockAuditGate(ctx context.Context, reason string, changedAt time.Time) (err error) {
 	if err := audit.ValidateGateReason(reason); err != nil || changedAt.IsZero() {
 		return audit.ErrInvalidDegradedStateMachine
 	}
-	result, err := r.db.ExecContext(ctx, blockAuditGateSQL, reason, changedAt.UTC())
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("block audit gate: %w", err)
+		return fmt.Errorf("begin audit gate block: %w", err)
 	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("inspect audit gate block: %w", err)
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			err = errors.Join(err, fmt.Errorf("roll back audit gate block: %w", rollbackErr))
+		}
+	}()
+	if err := blockAuditGateTx(ctx, tx, reason, changedAt.UTC()); err != nil {
+		return err
 	}
-	if rows != 1 {
-		return fmt.Errorf("block audit gate: %w", sql.ErrNoRows)
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit audit gate block: %w", err)
 	}
+	committed = true
 	return nil
 }
 
@@ -469,16 +646,8 @@ func (r *Repository) MarkAuditIncompleteAndBlock(ctx context.Context, auditID, r
 	if _, err := tx.ExecContext(ctx, markAuditIncompleteSQL, auditID, requestID, reason, completedAt.UTC()); err != nil {
 		return fmt.Errorf("mark failed audit incomplete: %w", err)
 	}
-	result, err := tx.ExecContext(ctx, blockAuditGateSQL, reason, completedAt.UTC())
-	if err != nil {
-		return fmt.Errorf("persist audit gate block: %w", err)
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("inspect audit gate block: %w", err)
-	}
-	if rows != 1 {
-		return fmt.Errorf("persist audit gate block: %w", sql.ErrNoRows)
+	if err := blockAuditGateTx(ctx, tx, reason, completedAt.UTC()); err != nil {
+		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit audit failure transaction: %w", err)
@@ -508,6 +677,10 @@ func (r *Repository) ReconcileAndOpenAuditGate(ctx context.Context, staleBefore,
 	if _, err := tx.ExecContext(ctx, reconcileStalePendingSQL, audit.GateReasonProcessRestart, staleBefore.UTC(), openedAt.UTC()); err != nil {
 		return fmt.Errorf("reconcile stale audits: %w", err)
 	}
+	previousState, err := lockAuditGateState(ctx, tx)
+	if err != nil {
+		return err
+	}
 	result, err := tx.ExecContext(ctx, openAuditGateSQL, openedAt.UTC())
 	if err != nil {
 		return fmt.Errorf("probe and open audit gate: %w", err)
@@ -519,11 +692,52 @@ func (r *Repository) ReconcileAndOpenAuditGate(ctx context.Context, staleBefore,
 	if rows != 1 {
 		return fmt.Errorf("probe and open audit gate: %w", sql.ErrNoRows)
 	}
+	if previousState == audit.AuditGateStateBlocked {
+		if err := appendOperationalEventTx(ctx, tx, operations.FaultTransition{
+			Fault: operations.FaultAuditUnavailable, Active: false, OccurredAt: openedAt.UTC(),
+		}); err != nil {
+			return err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit audit recovery transaction: %w", err)
 	}
 	committed = true
 	return nil
+}
+
+func blockAuditGateTx(ctx context.Context, tx *sql.Tx, reason string, changedAt time.Time) error {
+	previousState, err := lockAuditGateState(ctx, tx)
+	if err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, blockAuditGateSQL, reason, changedAt.UTC())
+	if err != nil {
+		return fmt.Errorf("persist audit gate block: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("inspect audit gate block: %w", err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("persist audit gate block: %w", sql.ErrNoRows)
+	}
+	if previousState != audit.AuditGateStateBlocked {
+		if err := appendOperationalEventTx(ctx, tx, operations.FaultTransition{
+			Fault: operations.FaultAuditUnavailable, Active: true, OccurredAt: changedAt.UTC(),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func lockAuditGateState(ctx context.Context, tx *sql.Tx) (audit.AuditGateState, error) {
+	var state audit.AuditGateState
+	if err := tx.QueryRowContext(ctx, lockAuditGateStateSQL).Scan(&state); err != nil {
+		return "", fmt.Errorf("lock audit gate state: %w", err)
+	}
+	return state, nil
 }
 
 func optionalAuditOwnerID(value string) any {

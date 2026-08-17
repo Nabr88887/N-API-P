@@ -73,6 +73,39 @@ func TestRepositoryListsAuditsWithExplicitColumnsAndStableBoundedPagination(t *t
 	}
 }
 
+func TestRepositoryListsAndGetsAuditMetadataWithoutRawContent(t *testing.T) {
+	db, _ := migrateRepositorySchema(t)
+	fixture := insertAuditPolicyFixture(t, db)
+	secondAuditID := "84000000-0000-0000-0000-000000000004"
+	insertPendingAudit(t, db, secondAuditID, "87000000-0000-0000-0000-000000000004", fixture, fixture.now.Add(time.Minute))
+
+	repository := NewRepository(db)
+	page, err := repository.ListAuditMetadata(context.Background(), audit.MetadataFilter{Limit: 1})
+	if err != nil {
+		t.Fatalf("ListAuditMetadata() error = %v", err)
+	}
+	if len(page.Records) != 1 || page.Records[0].ID != secondAuditID || page.NextCursor == "" {
+		t.Fatalf("first metadata page = %+v", page)
+	}
+	secondPage, err := repository.ListAuditMetadata(context.Background(), audit.MetadataFilter{Limit: 1, Cursor: page.NextCursor})
+	if err != nil {
+		t.Fatalf("ListAuditMetadata(second page) error = %v", err)
+	}
+	if len(secondPage.Records) != 1 || secondPage.Records[0].ID != fixture.auditID || secondPage.NextCursor != "" {
+		t.Fatalf("second metadata page = %+v", secondPage)
+	}
+	record, err := repository.GetAuditMetadata(context.Background(), fixture.auditID)
+	if err != nil {
+		t.Fatalf("GetAuditMetadata() error = %v", err)
+	}
+	if record.ID != fixture.auditID || record.ModelID != "gpt-test" || record.ObservedRequestBytes != 128 {
+		t.Fatalf("metadata record = %+v", record)
+	}
+	if _, err := repository.GetAuditMetadata(context.Background(), "84000000-0000-0000-0000-000000000099"); !errors.Is(err, audit.ErrMetadataNotFound) {
+		t.Fatalf("GetAuditMetadata(missing) error = %v, want ErrMetadataNotFound", err)
+	}
+}
+
 func TestRepositoryCreatePendingAuditRollsBackOnRawContentFailure(t *testing.T) {
 	db, _ := migrateRepositorySchema(t)
 	fixture := insertAuditPolicyFixture(t, db)

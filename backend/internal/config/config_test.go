@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadUsesDocumentedDefaults(t *testing.T) {
@@ -103,6 +104,69 @@ func TestLoadRejectsRetentionOutsideDeploymentCeiling(t *testing.T) {
 	_, err := Load(mapLookup(values))
 	if err == nil {
 		t.Fatal("Load() error = nil, want retention range error")
+	}
+}
+
+func TestLoadAppliesNewAPITimeoutDefaults(t *testing.T) {
+	cfg, err := Load(mapLookup(validEnvironment()))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.NewAPIConnectTimeout != 5*time.Second ||
+		cfg.NewAPITLSHandshakeTimeout != 5*time.Second ||
+		cfg.NewAPIResponseHeaderTimeout != 60*time.Second ||
+		cfg.NewAPIIdleConnTimeout != 90*time.Second ||
+		cfg.NewAPITotalTimeout != 10*time.Minute {
+		t.Fatalf("NewAPI timeouts = (%s, %s, %s, %s, %s), want documented defaults",
+			cfg.NewAPIConnectTimeout, cfg.NewAPITLSHandshakeTimeout,
+			cfg.NewAPIResponseHeaderTimeout, cfg.NewAPIIdleConnTimeout,
+			cfg.NewAPITotalTimeout)
+	}
+}
+
+func TestLoadParsesConfiguredNewAPITimeouts(t *testing.T) {
+	values := validEnvironment()
+	values["N_API_P_NEWAPI_CONNECT_TIMEOUT"] = "2s"
+	values["N_API_P_NEWAPI_TLS_HANDSHAKE_TIMEOUT"] = "3s"
+	values["N_API_P_NEWAPI_RESPONSE_HEADER_TIMEOUT"] = "45s"
+	values["N_API_P_NEWAPI_IDLE_CONN_TIMEOUT"] = "2m"
+	values["N_API_P_NEWAPI_TOTAL_TIMEOUT"] = "8m"
+
+	cfg, err := Load(mapLookup(values))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.NewAPIConnectTimeout != 2*time.Second ||
+		cfg.NewAPITLSHandshakeTimeout != 3*time.Second ||
+		cfg.NewAPIResponseHeaderTimeout != 45*time.Second ||
+		cfg.NewAPIIdleConnTimeout != 2*time.Minute ||
+		cfg.NewAPITotalTimeout != 8*time.Minute {
+		t.Fatalf("NewAPI timeouts = (%s, %s, %s, %s, %s), want configured values",
+			cfg.NewAPIConnectTimeout, cfg.NewAPITLSHandshakeTimeout,
+			cfg.NewAPIResponseHeaderTimeout, cfg.NewAPIIdleConnTimeout,
+			cfg.NewAPITotalTimeout)
+	}
+}
+
+func TestLoadRejectsInvalidNewAPITimeouts(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value string
+	}{
+		{name: "malformed", value: "not-a-duration"},
+		{name: "zero", value: "0s"},
+		{name: "too short", value: "50ms"},
+		{name: "too long", value: "31m"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			values := validEnvironment()
+			values["N_API_P_NEWAPI_TOTAL_TIMEOUT"] = test.value
+			if _, err := Load(mapLookup(values)); err == nil {
+				t.Fatal("Load() error = nil, want timeout validation error")
+			} else if test.value == "not-a-duration" && strings.Contains(err.Error(), test.value) {
+				t.Fatalf("Load() error echoes configuration value: %q", err)
+			}
+		})
 	}
 }
 

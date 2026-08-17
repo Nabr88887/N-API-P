@@ -93,6 +93,25 @@ func TestRepositoryLifecycleCleanupPersistsLagAndRetainsMetadata(t *testing.T) {
 	if !lastCleanup.Equal(cleanupAt) || overdue.Valid {
 		t.Fatalf("cleanup state = (%v, %v), want completion and no overdue state", lastCleanup, overdue)
 	}
+	rows, err := db.Query(`SELECT outcome, detail_code FROM security_events WHERE event_type = 'operational_fault' ORDER BY occurred_at, outcome`)
+	if err != nil {
+		t.Fatalf("query deletion operational events: %v", err)
+	}
+	defer rows.Close()
+	var events [][2]string
+	for rows.Next() {
+		var outcome, detail string
+		if err := rows.Scan(&outcome, &detail); err != nil {
+			t.Fatalf("scan deletion operational event: %v", err)
+		}
+		events = append(events, [2]string{outcome, detail})
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate deletion operational events: %v", err)
+	}
+	if len(events) != 2 || events[0] != [2]string{"failure", "raw_deletion_overdue"} || events[1] != [2]string{"success", "raw_deletion_overdue"} {
+		t.Fatalf("deletion operational events = %#v", events)
+	}
 }
 
 func TestRepositoryDeletionLagBecomesCriticalOnlyAfterOneHour(t *testing.T) {

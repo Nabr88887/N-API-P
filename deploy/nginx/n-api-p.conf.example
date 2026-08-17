@@ -1,0 +1,66 @@
+# Replace every N_API_P_* placeholder before including this configuration.
+
+upstream n_api_p_application {
+    server N_API_P_APPLICATION_UPSTREAM;
+    keepalive 16;
+}
+
+log_format n_api_p_safe escape=json
+    '{"time":"$time_iso8601",'
+    '"request_id":"$sent_http_x_request_id",'
+    '"method":"$request_method",'
+    '"uri":"$uri",'
+    '"status":$status,'
+    '"bytes_sent":$body_bytes_sent,'
+    '"request_time":$request_time}';
+
+server {
+    listen 443 ssl;
+    server_name N_API_P_INTERNAL_HOSTNAME;
+
+    ssl_certificate N_API_P_TLS_CERTIFICATE_FILE;
+    ssl_certificate_key N_API_P_TLS_PRIVATE_KEY_FILE;
+
+    access_log /var/log/nginx/n-api-p-access.log n_api_p_safe;
+    error_log /var/log/nginx/n-api-p-error.log warn;
+
+    location = /v1/chat/completions {
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Request-ID $request_id;
+
+        proxy_buffering off;
+        proxy_cache off;
+        gzip off;
+
+        proxy_pass http://n_api_p_application;
+    }
+
+    location ~ ^/(?:health/(?:live|ready)|metrics)$ {
+        allow N_API_P_OPERATOR_CIDR;
+        deny all;
+
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Request-ID $request_id;
+
+        proxy_pass http://n_api_p_application;
+    }
+
+    location / {
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Request-ID $request_id;
+
+        proxy_pass http://n_api_p_application;
+    }
+}

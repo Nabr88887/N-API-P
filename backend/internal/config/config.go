@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -16,16 +17,39 @@ const (
 	defaultRawRetentionDays    = 7
 	defaultRawRetentionMaxDays = 30
 	hardRawRetentionMaxDays    = 30
+
+	defaultNewAPIConnectTimeout        = 5 * time.Second
+	defaultNewAPITLSHandshakeTimeout   = 5 * time.Second
+	defaultNewAPIResponseHeaderTimeout = 60 * time.Second
+	defaultNewAPIIdleConnTimeout       = 90 * time.Second
+	defaultNewAPITotalTimeout          = 10 * time.Minute
+
+	minimumNewAPIConnectTimeout        = 100 * time.Millisecond
+	minimumNewAPITLSHandshakeTimeout   = 100 * time.Millisecond
+	minimumNewAPIResponseHeaderTimeout = 1 * time.Second
+	minimumNewAPIIdleConnTimeout       = 1 * time.Second
+	minimumNewAPITotalTimeout          = 1 * time.Second
+
+	maximumNewAPIConnectTimeout        = 30 * time.Second
+	maximumNewAPITLSHandshakeTimeout   = 30 * time.Second
+	maximumNewAPIResponseHeaderTimeout = 5 * time.Minute
+	maximumNewAPIIdleConnTimeout       = 10 * time.Minute
+	maximumNewAPITotalTimeout          = 30 * time.Minute
 )
 
 type Config struct {
-	ListenAddress           string
-	DatabaseURL             string
-	NewAPIBaseURL           *url.URL
-	NewAPITokenFile         string
-	AuditKeyFile            string
-	RawRetentionDefaultDays int
-	RawRetentionMaxDays     int
+	ListenAddress               string
+	DatabaseURL                 string
+	NewAPIBaseURL               *url.URL
+	NewAPITokenFile             string
+	NewAPIConnectTimeout        time.Duration
+	NewAPITLSHandshakeTimeout   time.Duration
+	NewAPIResponseHeaderTimeout time.Duration
+	NewAPIIdleConnTimeout       time.Duration
+	NewAPITotalTimeout          time.Duration
+	AuditKeyFile                string
+	RawRetentionDefaultDays     int
+	RawRetentionMaxDays         int
 }
 
 func LoadFromEnvironment() (Config, error) {
@@ -66,6 +90,60 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 		return Config{}, errors.New("N_API_P_NEWAPI_TOKEN_FILE and N_API_P_AUDIT_KEY_FILE must be different files")
 	}
 
+	newAPIConnectTimeout, err := optionalDuration(
+		lookup,
+		"N_API_P_NEWAPI_CONNECT_TIMEOUT",
+		defaultNewAPIConnectTimeout,
+		minimumNewAPIConnectTimeout,
+		maximumNewAPIConnectTimeout,
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	newAPITLSHandshakeTimeout, err := optionalDuration(
+		lookup,
+		"N_API_P_NEWAPI_TLS_HANDSHAKE_TIMEOUT",
+		defaultNewAPITLSHandshakeTimeout,
+		minimumNewAPITLSHandshakeTimeout,
+		maximumNewAPITLSHandshakeTimeout,
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	newAPIResponseHeaderTimeout, err := optionalDuration(
+		lookup,
+		"N_API_P_NEWAPI_RESPONSE_HEADER_TIMEOUT",
+		defaultNewAPIResponseHeaderTimeout,
+		minimumNewAPIResponseHeaderTimeout,
+		maximumNewAPIResponseHeaderTimeout,
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	newAPIIdleConnTimeout, err := optionalDuration(
+		lookup,
+		"N_API_P_NEWAPI_IDLE_CONN_TIMEOUT",
+		defaultNewAPIIdleConnTimeout,
+		minimumNewAPIIdleConnTimeout,
+		maximumNewAPIIdleConnTimeout,
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	newAPITotalTimeout, err := optionalDuration(
+		lookup,
+		"N_API_P_NEWAPI_TOTAL_TIMEOUT",
+		defaultNewAPITotalTimeout,
+		minimumNewAPITotalTimeout,
+		maximumNewAPITotalTimeout,
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	if newAPITotalTimeout < newAPIResponseHeaderTimeout {
+		return Config{}, errors.New("N_API_P_NEWAPI_TOTAL_TIMEOUT must not be shorter than N_API_P_NEWAPI_RESPONSE_HEADER_TIMEOUT")
+	}
+
 	listenAddress := optional(lookup, "N_API_P_LISTEN_ADDRESS", defaultListenAddress)
 	if _, _, err := net.SplitHostPort(listenAddress); err != nil {
 		return Config{}, errors.New("N_API_P_LISTEN_ADDRESS must be a valid host:port address")
@@ -93,13 +171,18 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 	}
 
 	return Config{
-		ListenAddress:           listenAddress,
-		DatabaseURL:             databaseURL,
-		NewAPIBaseURL:           newAPIURL,
-		NewAPITokenFile:         newAPITokenFile,
-		AuditKeyFile:            auditKeyFile,
-		RawRetentionDefaultDays: retentionDefaultDays,
-		RawRetentionMaxDays:     retentionMaxDays,
+		ListenAddress:               listenAddress,
+		DatabaseURL:                 databaseURL,
+		NewAPIBaseURL:               newAPIURL,
+		NewAPITokenFile:             newAPITokenFile,
+		NewAPIConnectTimeout:        newAPIConnectTimeout,
+		NewAPITLSHandshakeTimeout:   newAPITLSHandshakeTimeout,
+		NewAPIResponseHeaderTimeout: newAPIResponseHeaderTimeout,
+		NewAPIIdleConnTimeout:       newAPIIdleConnTimeout,
+		NewAPITotalTimeout:          newAPITotalTimeout,
+		AuditKeyFile:                auditKeyFile,
+		RawRetentionDefaultDays:     retentionDefaultDays,
+		RawRetentionMaxDays:         retentionMaxDays,
 	}, nil
 }
 
@@ -137,6 +220,22 @@ func optionalInt(
 	return parsed, nil
 }
 
+func optionalDuration(
+	lookup func(string) (string, bool),
+	key string,
+	fallback, minimum, maximum time.Duration,
+) (time.Duration, error) {
+	value, ok := lookup(key)
+	if !ok || strings.TrimSpace(value) == "" {
+		return fallback, nil
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed < minimum || parsed > maximum {
+		return 0, fmt.Errorf("%s must be a duration from %s through %s", key, minimum, maximum)
+	}
+	return parsed, nil
+}
+
 func requiredAbsolutePath(lookup func(string) (string, bool), key string) (string, error) {
 	value, err := required(lookup, key)
 	if err != nil {
@@ -158,8 +257,8 @@ func validateDatabaseURL(value string) error {
 
 func validateNewAPIURL(value string) (*url.URL, error) {
 	parsed, err := url.Parse(value)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
-		return nil, errors.New("N_API_P_NEWAPI_BASE_URL must be an HTTPS URL without credentials or fragments")
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" || parsed.RawQuery != "" || parsed.Opaque != "" {
+		return nil, errors.New("N_API_P_NEWAPI_BASE_URL must be an HTTPS URL without credentials, query, or fragments")
 	}
 	return parsed, nil
 }

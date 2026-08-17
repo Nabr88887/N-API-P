@@ -87,11 +87,11 @@ func (service *RawViewService) Inspect(ctx context.Context, input RawViewInput) 
 
 	err := service.guard.ExecuteAt(ctx, access.SensitiveActionRequest{
 		Session: input.Session, Action: access.SensitiveActionRawView,
-		RequestID: requestID, Reason: reason,
+		RequestID: requestID, TargetAuditID: auditID, Reason: reason,
 	}, visibleAt, func() (access.SensitiveActionExecution, error) {
 		if reason == "" {
 			return access.SensitiveActionExecution{
-				Outcome: access.SecurityEventDenied, DetailCode: "reason_required",
+				TargetAuditID: auditID, Outcome: access.SecurityEventDenied, DetailCode: "reason_required",
 			}, ErrRawViewReasonRequired
 		}
 

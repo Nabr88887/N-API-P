@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"n-api-p/internal/audit"
+	"n-api-p/internal/operations"
 	"time"
 )
 
@@ -51,6 +52,12 @@ WITH lag AS (
 )
 SELECT oldest_expired_at, deletion_overdue_since
 FROM updated`
+
+const lockDeletionOverdueSQL = `
+SELECT deletion_overdue_since
+FROM operational_state
+WHERE id = 1
+FOR UPDATE`
 
 const deleteExpiredRawContentSQL = `
 DELETE FROM audit_raw_content
@@ -102,15 +109,32 @@ func (r *Repository) ReadRawContent(ctx context.Context, lookup audit.RawContent
 	return record, nil
 }
 
-func (r *Repository) ObserveDeletionLag(ctx context.Context, observedAt time.Time) (audit.DeletionLagState, error) {
+func (r *Repository) ObserveDeletionLag(ctx context.Context, observedAt time.Time) (state audit.DeletionLagState, err error) {
 	if observedAt.IsZero() {
 		return audit.DeletionLagState{}, audit.ErrInvalidLifecycle
 	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return audit.DeletionLagState{}, fmt.Errorf("begin deletion lag observation: %w", err)
+	}
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			err = errors.Join(err, fmt.Errorf("roll back deletion lag observation: %w", rollbackErr))
+		}
+	}()
+	previousOverdue, err := lockDeletionOverdue(ctx, tx)
+	if err != nil {
+		return audit.DeletionLagState{}, err
+	}
 	var oldestExpiredAt, overdueSince sql.NullTime
-	if err := r.db.QueryRowContext(ctx, observeDeletionLagSQL, observedAt.UTC()).Scan(&oldestExpiredAt, &overdueSince); err != nil {
+	if err := tx.QueryRowContext(ctx, observeDeletionLagSQL, observedAt.UTC()).Scan(&oldestExpiredAt, &overdueSince); err != nil {
 		return audit.DeletionLagState{}, fmt.Errorf("observe raw deletion lag: %w", err)
 	}
-	state := audit.DeletionLagState{Critical: overdueSince.Valid, ObservedAt: observedAt.UTC()}
+	state = audit.DeletionLagState{Critical: overdueSince.Valid, ObservedAt: observedAt.UTC()}
 	if oldestExpiredAt.Valid {
 		value := oldestExpiredAt.Time
 		state.OldestExpiredAt = &value
@@ -119,6 +143,17 @@ func (r *Repository) ObserveDeletionLag(ctx context.Context, observedAt time.Tim
 		value := overdueSince.Time
 		state.OverdueSince = &value
 	}
+	if !previousOverdue.Valid && overdueSince.Valid {
+		if err := appendOperationalEventTx(ctx, tx, operations.FaultTransition{
+			Fault: operations.FaultRawDeletionOverdue, Active: true, OccurredAt: observedAt.UTC(),
+		}); err != nil {
+			return audit.DeletionLagState{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return audit.DeletionLagState{}, fmt.Errorf("commit deletion lag observation: %w", err)
+	}
+	committed = true
 	return state, nil
 }
 
@@ -139,6 +174,10 @@ func (r *Repository) DeleteExpiredRawContent(ctx context.Context, expiredAt time
 			err = errors.Join(err, fmt.Errorf("roll back raw cleanup transaction: %w", rollbackErr))
 		}
 	}()
+	previousOverdue, err := lockDeletionOverdue(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
 
 	result, err := tx.ExecContext(ctx, deleteExpiredRawContentSQL, expiredAt.UTC())
 	if err != nil {
@@ -157,11 +196,26 @@ func (r *Repository) DeleteExpiredRawContent(ctx context.Context, expiredAt time
 	} else if affected != 1 {
 		return 0, fmt.Errorf("record raw cleanup completion: %w", sql.ErrNoRows)
 	}
+	if previousOverdue.Valid {
+		if err := appendOperationalEventTx(ctx, tx, operations.FaultTransition{
+			Fault: operations.FaultRawDeletionOverdue, Active: false, OccurredAt: expiredAt.UTC(),
+		}); err != nil {
+			return 0, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit raw cleanup transaction: %w", err)
 	}
 	committed = true
 	return deleted, nil
+}
+
+func lockDeletionOverdue(ctx context.Context, tx *sql.Tx) (sql.NullTime, error) {
+	var overdue sql.NullTime
+	if err := tx.QueryRowContext(ctx, lockDeletionOverdueSQL).Scan(&overdue); err != nil {
+		return sql.NullTime{}, fmt.Errorf("lock deletion lag state: %w", err)
+	}
+	return overdue, nil
 }
 
 func (r *Repository) PurgeRevokedVerificationHashes(ctx context.Context, purgeAt time.Time) (int64, error) {
