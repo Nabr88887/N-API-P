@@ -420,8 +420,12 @@ SET capture_status = 'incomplete',
     completed_at = $4
 WHERE id = $1
   AND request_id = $2
-  AND capture_status = 'pending'
-  AND outcome = 'pending'`
+  AND (
+      (capture_status = 'pending' AND outcome = 'pending')
+      OR (capture_status = 'complete' AND outcome IN ('success', 'upstream_error'))
+      OR (capture_status = 'truncated' AND outcome IN ('success', 'upstream_error', 'local_error'))
+      OR (capture_status = 'incomplete' AND outcome IN ('cancelled', 'local_error'))
+  )`
 
 const reconcileStalePendingSQL = `
 UPDATE audit_records

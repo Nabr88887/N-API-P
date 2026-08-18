@@ -104,3 +104,43 @@ func TestRepositoryAuditGateRecoveryRollsBackWhenProbeWriteFails(t *testing.T) {
 		t.Fatalf("rolled-back stale audit = (%q, %q), want pending/pending", status, outcome)
 	}
 }
+
+func TestTask102UsagePersistenceFailureMarksCompletedAuditIncompleteAndBlocks(t *testing.T) {
+	db, _ := migrateRepositorySchema(t)
+	fixture := insertAuditPolicyFixture(t, db)
+	insertRequestRawContent(t, db, fixture)
+	repository := NewRepository(db)
+	completedAt := fixture.now.Add(time.Minute)
+	status := 200
+
+	if err := repository.FinalizeAudit(context.Background(), audit.FinalAudit{
+		ID: fixture.auditID, RequestID: fixture.requestID, OwnerKind: audit.OwnerKindPersonal,
+		IdentityID: fixture.identityID, TeamID: fixture.teamID, ModelID: "gpt-test",
+		CaptureStatus: audit.CaptureStatusComplete, Outcome: audit.AuditOutcomeSuccess,
+		UpstreamRequestID: "synthetic-upstream", UpstreamHTTPStatus: &status, FinishReason: "stop",
+		ObservedResponseBytes: 64, CompletedAt: completedAt,
+		ResponseContent: validEncryptedContent(),
+	}); err != nil {
+		t.Fatalf("FinalizeAudit() error = %v", err)
+	}
+
+	failureAt := completedAt.Add(time.Second)
+	if err := repository.MarkAuditIncompleteAndBlock(context.Background(), fixture.auditID, fixture.requestID, audit.GateReasonUsagePersistence, failureAt); err != nil {
+		t.Fatalf("MarkAuditIncompleteAndBlock() error = %v", err)
+	}
+
+	var captureStatus, outcome, errorCode string
+	if err := db.QueryRow(`SELECT capture_status, outcome, error_code FROM audit_records WHERE id = $1`, fixture.auditID).Scan(&captureStatus, &outcome, &errorCode); err != nil {
+		t.Fatalf("read usage-failed audit: %v", err)
+	}
+	if captureStatus != string(audit.CaptureStatusIncomplete) || outcome != string(audit.AuditOutcomeLocalError) || errorCode != audit.GateReasonUsagePersistence {
+		t.Fatalf("usage-failed audit state = (%q, %q, %q), want incomplete/local_error/usage reason", captureStatus, outcome, errorCode)
+	}
+	gate, err := repository.ReadAuditGate(context.Background())
+	if err != nil {
+		t.Fatalf("ReadAuditGate() error = %v", err)
+	}
+	if gate.State != audit.AuditGateStateBlocked || gate.ReasonCode != audit.GateReasonUsagePersistence {
+		t.Fatalf("usage-failed gate = (%q, %q), want blocked/usage reason", gate.State, gate.ReasonCode)
+	}
+}

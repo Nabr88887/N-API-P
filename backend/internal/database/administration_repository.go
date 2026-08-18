@@ -155,7 +155,7 @@ func (r *Repository) ListAdministrationInvitations(ctx context.Context, filter a
 			}
 		}
 	}()
-	if err := requireActiveSystemAdministrator(ctx, tx, filter.ActorIdentityID); err != nil {
+	if err := requireActiveSystemAdministratorReadOnly(ctx, tx, filter.ActorIdentityID); err != nil {
 		return access.AdministrationInvitationPage{}, err
 	}
 	rows, err := tx.QueryContext(ctx, listAdministrationInvitationsSQL, optionalAdministrationStatus(filter.Status), cursorTime, cursorID, filter.Limit+1)
@@ -216,7 +216,7 @@ func (r *Repository) ListAdministrationAccounts(ctx context.Context, filter acce
 			}
 		}
 	}()
-	if err := requireActiveSystemAdministrator(ctx, tx, filter.ActorIdentityID); err != nil {
+	if err := requireActiveSystemAdministratorReadOnly(ctx, tx, filter.ActorIdentityID); err != nil {
 		return access.AdministrationAccountPage{}, err
 	}
 	rows, err := tx.QueryContext(ctx, listAdministrationAccountsSQL,
@@ -283,7 +283,7 @@ func (r *Repository) ListAdministrationTeams(ctx context.Context, filter access.
 			}
 		}
 	}()
-	if err := requireActiveSystemAdministrator(ctx, tx, filter.ActorIdentityID); err != nil {
+	if err := requireActiveSystemAdministratorReadOnly(ctx, tx, filter.ActorIdentityID); err != nil {
 		return access.AdministrationTeamPage{}, err
 	}
 	rows, err := tx.QueryContext(ctx, listAdministrationTeamsSQL,
@@ -343,7 +343,7 @@ func (r *Repository) ListAdministrationServiceAccounts(ctx context.Context, filt
 			}
 		}
 	}()
-	if err := requireActiveSystemAdministrator(ctx, tx, filter.ActorIdentityID); err != nil {
+	if err := requireActiveSystemAdministratorReadOnly(ctx, tx, filter.ActorIdentityID); err != nil {
 		return access.AdministrationServiceAccountPage{}, err
 	}
 	rows, err := tx.QueryContext(ctx, listAdministrationServiceAccountsSQL,
@@ -508,7 +508,7 @@ func (r *Repository) withAdministrationRead(ctx context.Context, actorIdentityID
 			}
 		}
 	}()
-	if err := requireActiveSystemAdministrator(ctx, tx, actorIdentityID); err != nil {
+	if err := requireActiveSystemAdministratorReadOnly(ctx, tx, actorIdentityID); err != nil {
 		return err
 	}
 	if err := run(tx); err != nil {

@@ -53,6 +53,38 @@ func TestAdministrationRepositoryReadsDeclaredResources(t *testing.T) {
 	}
 }
 
+func TestAdministrationRepositoryReadOnlyListsAuthorizeActiveAdministrator(t *testing.T) {
+	db, _ := migrateWorkforceSchema(t)
+	seedAccessOwners(t, db)
+	mustExec(t, db, `INSERT INTO memberships (identity_id, team_id) VALUES ($1, $2)`, accessEmployeeID, accessTeamID)
+	repository := NewRepository(db)
+
+	if _, err := repository.ListAdministrationInvitations(context.Background(), access.AdministrationInvitationFilter{
+		ActorIdentityID: accessAdminID,
+		Limit:           50,
+	}); err != nil {
+		t.Fatalf("ListAdministrationInvitations() error = %v", err)
+	}
+	if _, err := repository.ListAdministrationAccounts(context.Background(), access.AdministrationAccountFilter{
+		ActorIdentityID: accessAdminID,
+		Limit:           50,
+	}); err != nil {
+		t.Fatalf("ListAdministrationAccounts() error = %v", err)
+	}
+	if _, err := repository.ListAdministrationTeams(context.Background(), access.AdministrationTeamFilter{
+		ActorIdentityID: accessAdminID,
+		Limit:           50,
+	}); err != nil {
+		t.Fatalf("ListAdministrationTeams() error = %v", err)
+	}
+	if _, err := repository.ListAdministrationServiceAccounts(context.Background(), access.AdministrationServiceAccountFilter{
+		ActorIdentityID: accessAdminID,
+		Limit:           50,
+	}); err != nil {
+		t.Fatalf("ListAdministrationServiceAccounts() error = %v", err)
+	}
+}
+
 func TestAdministrationRepositoryTeamChangesAreAuditedAndAtomic(t *testing.T) {
 	db, _ := migrateWorkforceSchema(t)
 	seedAccessOwners(t, db)

@@ -23,6 +23,11 @@ FROM identities
 WHERE id = $1
 FOR SHARE`
 
+const selectActiveAdministratorReadOnlySQL = `
+SELECT role, status
+FROM identities
+WHERE id = $1`
+
 const selectActiveTeamSQL = `
 SELECT status
 FROM teams
@@ -863,9 +868,17 @@ type transactionQueryer interface {
 }
 
 func requireActiveSystemAdministrator(ctx context.Context, queryer transactionQueryer, identityID string) error {
+	return requireActiveSystemAdministratorWithQuery(ctx, queryer, identityID, selectActiveAdministratorSQL)
+}
+
+func requireActiveSystemAdministratorReadOnly(ctx context.Context, queryer transactionQueryer, identityID string) error {
+	return requireActiveSystemAdministratorWithQuery(ctx, queryer, identityID, selectActiveAdministratorReadOnlySQL)
+}
+
+func requireActiveSystemAdministratorWithQuery(ctx context.Context, queryer transactionQueryer, identityID, query string) error {
 	var role string
 	var status string
-	err := queryer.QueryRowContext(ctx, selectActiveAdministratorSQL, identityID).Scan(&role, &status)
+	err := queryer.QueryRowContext(ctx, query, identityID).Scan(&role, &status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return access.ErrForbidden
 	}
