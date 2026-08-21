@@ -24,7 +24,7 @@ func TestReauthenticationHandlerRotatesCookieWithoutReturningSecrets(t *testing.
 		t.Fatalf("response/input = (%d, %+v)", recorder.Code, service.input)
 	}
 	cookies := recorder.Result().Cookies()
-	if len(cookies) != 1 || cookies[0].Value != "new-token" || !cookies[0].HttpOnly || !cookies[0].Secure || cookies[0].SameSite != http.SameSiteStrictMode {
+	if len(cookies) != 2 || cookies[0].Value != "new-token" || !cookies[0].HttpOnly || !cookies[0].Secure || cookies[0].SameSite != http.SameSiteStrictMode || cookies[1].Name != PortalCSRFCookieName || cookies[1].Value != "new-csrf" || cookies[1].HttpOnly || !cookies[1].Secure || cookies[1].SameSite != http.SameSiteStrictMode {
 		t.Fatalf("rotated cookie = %+v", cookies)
 	}
 	if recorder.Header().Get(CSRFHeaderName) != "new-csrf" {

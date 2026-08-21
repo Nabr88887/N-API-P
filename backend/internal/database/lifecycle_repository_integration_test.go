@@ -189,6 +189,93 @@ func TestRepositoryPurgesOnlyRevokedVerificationHashes(t *testing.T) {
 	expectRejected(t, db, `UPDATE api_keys SET verification_hash = NULL WHERE id = $1`, activeKeyID)
 }
 
+func TestRepositoryMetadataRetentionUsesCalendarYearCutoffs(t *testing.T) {
+	db, _ := migrateRepositorySchema(t)
+	fixture := insertAuditPolicyFixture(t, db)
+	repository := NewRepository(db)
+	purgeAt := time.Date(2024, time.March, 1, 12, 0, 0, 0, time.UTC)
+	mustExec(t, db, `INSERT INTO usage_records (id, audit_id, request_id, key_id, owner_kind, identity_id, team_id, model_id, outcome, usage_reported, created_at) VALUES ($1, $2, $3, $4, 'personal', $5, $6, 'gpt-test', 'success', false, $7)`, "85000000-0000-0000-0000-000000000031", fixture.auditID, fixture.requestID, fixture.keyID, fixture.identityID, fixture.teamID, time.Date(2023, time.March, 2, 0, 0, 0, 0, time.UTC))
+
+	result, err := repository.PurgeExpiredMetadata(context.Background(), purgeAt)
+	if err != nil {
+		t.Fatalf("PurgeExpiredMetadata() error = %v", err)
+	}
+	if result.UsageRows != 0 {
+		t.Fatalf("usage rows purged across leap-year boundary = %d, want 0", result.UsageRows)
+	}
+	assertLifecycleRowCount(t, db, "usage_records", "audit_id", fixture.auditID, 1)
+}
+
+func TestRepositoryMetadataRetentionRemovesExpiredIdentityDependencies(t *testing.T) {
+	db, _ := migrateRepositorySchema(t)
+	repository := NewRepository(db)
+	const identityID = "82000000-0000-0000-0000-000000000071"
+	disabledAt := time.Date(2022, time.March, 1, 0, 0, 0, 0, time.UTC)
+	purgeAt := time.Date(2024, time.March, 1, 12, 0, 0, 0, time.UTC)
+	mustExec(t, db, `INSERT INTO teams (id, name, status, created_at, updated_at) VALUES ($1, 'expired-owner-team', 'active', $2, $2)`, "81000000-0000-0000-0000-000000000071", disabledAt)
+	mustExec(t, db, `INSERT INTO identities (id, email, role, status, created_at, updated_at, disabled_at) VALUES ($1, 'expired-owner@example.internal', 'employee', 'disabled', $2, $2, $2)`, identityID, disabledAt)
+	mustExec(t, db, `INSERT INTO memberships (identity_id, team_id, created_at) VALUES ($1, $2, $3)`, identityID, "81000000-0000-0000-0000-000000000071", disabledAt)
+	mustExec(t, db, `INSERT INTO sessions (id, identity_id, token_hash, csrf_token_hash, created_at, last_seen_at, idle_expires_at, absolute_expires_at, revoked_at) VALUES ($1, $2, $3, $4, $5, $5, $5::timestamptz + interval '30 minutes', $5::timestamptz + interval '12 hours', $5::timestamptz + interval '1 hour')`, "81000000-0000-0000-0000-000000000071", identityID, []byte("expired-session-hash"), []byte("expired-csrf-hash"), disabledAt)
+	mustExec(t, db, `INSERT INTO one_time_codes (id, identity_id, email, purpose, code_hash, expires_at, created_at, revoked_at, issued_by_identity_id) VALUES ($1, $2, 'expired-owner@example.internal', 'password_reset', $3, $4::timestamptz + interval '30 minutes', $4, $4::timestamptz + interval '1 minute', $2)`, "81000000-0000-0000-0000-000000000072", identityID, []byte("expired-code-hash"), disabledAt)
+	mustExec(t, db, `INSERT INTO model_allowlist (model_id, status, updated_by_identity_id, created_at, updated_at) VALUES ('expired-owner-model', 'disabled', $1, $2, $2)`, identityID, disabledAt)
+
+	result, err := repository.PurgeExpiredMetadata(context.Background(), purgeAt)
+	if err != nil {
+		t.Fatalf("PurgeExpiredMetadata() error = %v", err)
+	}
+	if result.OwnershipRows != 1 {
+		t.Fatalf("ownership rows purged = %d, want 1", result.OwnershipRows)
+	}
+	for table, query := range map[string]string{
+		"identity":      `SELECT count(*) FROM identities WHERE id = $1`,
+		"membership":    `SELECT count(*) FROM memberships WHERE identity_id = $1`,
+		"session":       `SELECT count(*) FROM sessions WHERE identity_id = $1`,
+		"one-time code": `SELECT count(*) FROM one_time_codes WHERE identity_id = $1 OR issued_by_identity_id = $1`,
+	} {
+		var count int
+		if err := db.QueryRow(query, identityID).Scan(&count); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("%s rows = %d, want 0", table, count)
+		}
+	}
+	var updater sql.NullString
+	if err := db.QueryRow(`SELECT updated_by_identity_id::text FROM model_allowlist WHERE model_id = 'expired-owner-model'`).Scan(&updater); err != nil {
+		t.Fatalf("read retained model policy: %v", err)
+	}
+	if updater.Valid {
+		t.Fatalf("retained model policy updater = %q, want NULL", updater.String)
+	}
+	models, err := repository.ReadModelAllowlist(context.Background())
+	if err != nil {
+		t.Fatalf("ReadModelAllowlist() after updater expiry error = %v", err)
+	}
+	if len(models) != 1 || models[0].ModelID != "expired-owner-model" || models[0].UpdatedByIdentityID != "" {
+		t.Fatalf("retained model policy = %+v", models)
+	}
+}
+
+func TestRepositoryMetadataFailureDoesNotRollbackSuccessfulClasses(t *testing.T) {
+	db, _ := migrateRepositorySchema(t)
+	fixture := insertAuditPolicyFixture(t, db)
+	repository := NewRepository(db)
+	purgeAt := time.Date(2026, time.March, 1, 12, 0, 0, 0, time.UTC)
+	mustExec(t, db, `INSERT INTO usage_records (id, audit_id, request_id, key_id, owner_kind, identity_id, team_id, model_id, outcome, usage_reported, created_at) VALUES ($1, $2, $3, $4, 'personal', $5, $6, 'gpt-test', 'success', false, $7)`, "85000000-0000-0000-0000-000000000032", fixture.auditID, fixture.requestID, fixture.keyID, fixture.identityID, fixture.teamID, purgeAt.AddDate(-1, 0, -1))
+	mustExec(t, db, `INSERT INTO security_events (id, event_type, request_id, outcome, occurred_at, retain_until) VALUES ($1, 'operational_fault', $2, 'failure', $3, $4)`, "86000000-0000-0000-0000-000000000032", "87000000-0000-0000-0000-000000000032", purgeAt.AddDate(0, -2, 0), purgeAt.AddDate(0, -1, 0))
+	mustExec(t, db, `CREATE FUNCTION reject_synthetic_operational_cleanup() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic metadata failure'; END $$`)
+	mustExec(t, db, `CREATE TRIGGER reject_synthetic_operational_cleanup BEFORE DELETE ON security_events FOR EACH ROW WHEN (OLD.event_type = 'operational_fault') EXECUTE FUNCTION reject_synthetic_operational_cleanup()`)
+
+	result, err := repository.PurgeExpiredMetadata(context.Background(), purgeAt)
+	if err == nil {
+		t.Fatal("PurgeExpiredMetadata() succeeded despite the synthetic operational failure")
+	}
+	if result.UsageRows != 1 {
+		t.Fatalf("usage rows purged = %d, want 1 despite independent operational failure", result.UsageRows)
+	}
+	assertLifecycleRowCount(t, db, "usage_records", "audit_id", fixture.auditID, 0)
+}
+
 func assertLifecycleRowCount(t *testing.T, db *sql.DB, tableName, columnName string, value any, want int) {
 	t.Helper()
 	queries := map[string]string{

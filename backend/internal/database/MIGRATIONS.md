@@ -52,10 +52,10 @@ approval gates.
 
 ## Compatibility Evidence
 
-Task 2.5 migrates one isolated synthetic schema through versions 2, 3, and 4.
+Task 2.5 migrates one isolated synthetic schema through versions 2 through 7.
 It seeds data through frozen version-2 workforce SQL, reruns that same consumer
-after versions 3 and 4, seeds version-3 audit/usage/security data, and reruns the
-same version-3 consumer after version 4. The probes enumerate selected columns,
+after every later version, seeds version-3 audit/usage/security data, and reruns
+the same version-3 consumer after every later version. The probes enumerate selected columns,
 parameterize every value, exercise both reads and writes, and verify retained
 ownership and audit correlations. A schema-compatible application rollback does
 not require a schema downgrade.
@@ -81,3 +81,26 @@ their non-null contract, and neither consumer selects revoked verification
 hashes. There is no destructive down migration because purged hashes cannot be
 reconstructed. Disposable test schemas are reset as a unit; deployed rollback
 uses a prior compatible application image or a new forward repair migration.
+
+## 000006 Metadata Retention
+
+Migration `000006_metadata_retention` adds lookup indexes for metadata expiry
+and the original maintenance path for deleting expired append-only events. Its
+GUC-based trigger exception is superseded by migration 000007 and must not be
+used as a release authorization boundary.
+
+## 000007 Metadata Retention Hardening
+
+Migration `000007_metadata_retention_hardening` backfills historical
+`operational_fault` events to the 30-day retention class, makes model-policy
+updater ownership nullable so the policy survives ownership expiry, adds the
+foreign-key lookup indexes used by bounded cleanup, and installs the bounded
+`n_api_p_purge_security_events` function. The append-only trigger ignores the
+legacy maintenance GUC and permits deletion only after `retain_until`; retained
+events still reject updates and deletes.
+
+The down migration removes the new function and indexes and restores the
+version-6 trigger behavior. It intentionally leaves
+`model_allowlist.updated_by_identity_id` nullable because a removed historical
+updater cannot be reconstructed safely. Deployed rollback uses a compatible
+prior image or a new forward repair rather than a destructive schema downgrade.

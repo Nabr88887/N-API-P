@@ -69,7 +69,7 @@ func TestTask105PrepareSource(t *testing.T) {
 	task105Exec(t, db, `INSERT INTO audit_records (id, request_id, key_id, owner_kind, identity_id, team_id, model_id, capture_status, outcome, upstream_request_id, upstream_http_status, finish_reason, observed_request_bytes, observed_response_bytes, created_at, updated_at, completed_at) VALUES ($1, $2, $3, 'personal', $4, $5, 'task105-model', 'complete', 'success', 'task105-upstream', 200, 'stop', 64, 96, $6::timestamptz, $6::timestamptz, $6::timestamptz)`, task105AuditID, task105RequestID, task105PersonalKeyID, task105EmployeeID, task105TeamID, now)
 	task105Exec(t, db, `INSERT INTO audit_raw_content (audit_id, content_kind, compression, ciphertext, cipher_nonce, wrapped_data_key, wrap_nonce, key_version, created_at, expires_at) VALUES ($1, 'request', 'gzip', $2, decode(repeat('61', 12), 'hex'), decode(repeat('62', 32), 'hex'), decode(repeat('63', 12), 'hex'), 1, $3::timestamptz, $3::timestamptz + interval '7 days')`, task105AuditID, []byte(task105RawMarker+"-ciphertext"), now)
 	task105Exec(t, db, `INSERT INTO usage_records (id, audit_id, request_id, key_id, owner_kind, identity_id, team_id, model_id, upstream_request_id, outcome, usage_reported, input_tokens, output_tokens, total_tokens, created_at) VALUES ($1, $2, $3, $4, 'personal', $5, $6, 'task105-model', 'task105-upstream', 'success', true, 3, 4, 7, $7)`, task105UsageID, task105AuditID, task105RequestID, task105PersonalKeyID, task105EmployeeID, task105TeamID, now)
-	task105Exec(t, db, `INSERT INTO security_events (id, event_type, request_id, outcome, reason, detail_code, occurred_at, retain_until) VALUES ($1, 'operational_fault', $2, 'failure', $3, 'task105_recovery_point', $4::timestamptz, $4::timestamptz + interval '2 years')`, task105EventID, task105RequestID, now.Format(time.RFC3339), now)
+	task105Exec(t, db, `INSERT INTO security_events (id, event_type, request_id, outcome, reason, detail_code, occurred_at, retain_until) VALUES ($1, 'operational_fault', $2, 'failure', $3, 'task105_recovery_point', $4::timestamptz, $4::timestamptz + interval '30 days')`, task105EventID, task105RequestID, now.Format(time.RFC3339), now)
 	task105AssertCount(t, db, "audit_raw_content", 1)
 }
 
@@ -151,7 +151,7 @@ func TestTask105InvalidateRestoredCredentials(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := tx.Exec(`INSERT INTO security_events (id, event_type, request_id, outcome, reason, detail_code, occurred_at, retain_until) VALUES (gen_random_uuid(), 'operational_fault', gen_random_uuid(), 'failure', 'restore_raw_window_not_recovered', 'database_unavailable', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + interval '2 years')`); err != nil {
+	if _, err := tx.Exec(`INSERT INTO security_events (id, event_type, request_id, outcome, reason, detail_code, occurred_at, retain_until) VALUES (gen_random_uuid(), 'operational_fault', gen_random_uuid(), 'failure', 'restore_raw_window_not_recovered', 'database_unavailable', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + interval '30 days')`); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -305,6 +305,8 @@ func task105AssertMigrationVersion(t *testing.T, db *sql.DB) {
 		"000003_audit_policy_operations.up.sql",
 		"000004_repository_indexes.up.sql",
 		"000005_lifecycle_maintenance.up.sql",
+		"000006_metadata_retention.up.sql",
+		"000007_metadata_retention_hardening.up.sql",
 	}
 	if strings.Join(migrations, "\n") != strings.Join(wantMigrations, "\n") {
 		t.Fatalf("migration inventory = %v, want %v", migrations, wantMigrations)
@@ -350,6 +352,13 @@ func task105AssertMigrationVersion(t *testing.T, db *sql.DB) {
 	}
 	if !lifecycleIndexExists {
 		t.Fatal("migration 000004 index api_keys_revoked_idx is missing")
+	}
+	var retentionFunctionExists bool
+	if err := db.QueryRow(`SELECT to_regprocedure(current_schema() || '.n_api_p_purge_security_events(timestamptz,text,integer)') IS NOT NULL`).Scan(&retentionFunctionExists); err != nil {
+		t.Fatal(err)
+	}
+	if !retentionFunctionExists {
+		t.Fatal("migration 000007 controlled security-event purge function is missing")
 	}
 }
 

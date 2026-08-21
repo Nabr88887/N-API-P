@@ -87,6 +87,38 @@ func TestLifecycleJobRunsImmediatelyAndEveryFifteenMinutes(t *testing.T) {
 	}
 }
 
+func TestLifecycleJobRetriesAfterAFailedRun(t *testing.T) {
+	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+	repository := &lifecycleRepositoryFake{
+		observed:      make(chan time.Time, 2),
+		observeErrors: []error{errors.New("synthetic metadata failure"), nil},
+	}
+	job, err := NewLifecycleJob(repository)
+	if err != nil {
+		t.Fatalf("NewLifecycleJob() error = %v", err)
+	}
+	current := now
+	job.now = func() time.Time { return current }
+	ticker := &fakeLifecycleTicker{ticks: make(chan time.Time, 1)}
+	job.newTicker = func(time.Duration) lifecycleTicker { return ticker }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- job.Run(ctx) }()
+	if observed := receiveLifecycleTime(t, repository.observed); !observed.Equal(now) {
+		t.Fatalf("failed immediate run = %v, want %v", observed, now)
+	}
+	current = now.Add(CleanupInterval)
+	ticker.ticks <- current
+	if observed := receiveLifecycleTime(t, repository.observed); !observed.Equal(current) {
+		t.Fatalf("retry run = %v, want %v", observed, current)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+}
+
 func receiveLifecycleTime(t *testing.T, values <-chan time.Time) time.Time {
 	t.Helper()
 	select {
@@ -104,6 +136,8 @@ type lifecycleRepositoryFake struct {
 	purgedHashes   int64
 	purgedMetadata MetadataPurgeResult
 	observeErr     error
+	observeErrors  []error
+	observeCalls   int
 	deleteErr      error
 	purgeErr       error
 	calls          []string
@@ -119,6 +153,12 @@ func (repository *lifecycleRepositoryFake) ObserveDeletionLag(_ context.Context,
 	if repository.observed != nil {
 		repository.observed <- observedAt
 	}
+	if repository.observeCalls < len(repository.observeErrors) {
+		err := repository.observeErrors[repository.observeCalls]
+		repository.observeCalls++
+		return repository.lag, err
+	}
+	repository.observeCalls++
 	return repository.lag, repository.observeErr
 }
 

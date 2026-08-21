@@ -15,20 +15,23 @@ var middlewareNow = time.Date(2026, time.August, 3, 12, 0, 0, 0, time.UTC)
 
 func TestPortalSessionCookieUsesStrictHostOnlySecurityAttributes(t *testing.T) {
 	recorder := httptest.NewRecorder()
-	WritePortalSessionCookie(recorder, access.PortalSession{Token: "opaque-session-token", ExpiresAt: middlewareNow.Add(12 * time.Hour)})
+	WritePortalSessionCookie(recorder, access.PortalSession{Token: "opaque-session-token", CSRFToken: "opaque-csrf-token", ExpiresAt: middlewareNow.Add(12 * time.Hour)})
 	cookies := recorder.Result().Cookies()
-	if len(cookies) != 1 {
-		t.Fatalf("cookies = %d, want 1", len(cookies))
+	if len(cookies) != 2 {
+		t.Fatalf("cookies = %d, want session and CSRF cookies", len(cookies))
 	}
-	cookie := cookies[0]
-	if cookie.Name != PortalSessionCookieName || cookie.Value != "opaque-session-token" || cookie.Path != "/" {
-		t.Fatalf("cookie identity = %+v", cookie)
+	sessionCookie, csrfCookie := cookies[0], cookies[1]
+	if sessionCookie.Name != PortalSessionCookieName || sessionCookie.Value != "opaque-session-token" || sessionCookie.Path != "/" {
+		t.Fatalf("session cookie identity = %+v", sessionCookie)
 	}
-	if !cookie.HttpOnly || !cookie.Secure || cookie.SameSite != http.SameSiteStrictMode || cookie.Domain != "" {
-		t.Fatalf("cookie security attributes = %+v", cookie)
+	if !sessionCookie.HttpOnly || !sessionCookie.Secure || sessionCookie.SameSite != http.SameSiteStrictMode || sessionCookie.Domain != "" {
+		t.Fatalf("session cookie security attributes = %+v", sessionCookie)
 	}
-	if !cookie.Expires.Equal(middlewareNow.Add(12 * time.Hour)) {
-		t.Fatalf("cookie expiry = %v", cookie.Expires)
+	if csrfCookie.Name != PortalCSRFCookieName || csrfCookie.Value != "opaque-csrf-token" || csrfCookie.Path != "/" || csrfCookie.HttpOnly || !csrfCookie.Secure || csrfCookie.SameSite != http.SameSiteStrictMode || csrfCookie.Domain != "" {
+		t.Fatalf("CSRF cookie security attributes = %+v", csrfCookie)
+	}
+	if !sessionCookie.Expires.Equal(middlewareNow.Add(12*time.Hour)) || !csrfCookie.Expires.Equal(sessionCookie.Expires) {
+		t.Fatalf("cookie expiries = (%v, %v)", sessionCookie.Expires, csrfCookie.Expires)
 	}
 }
 
@@ -154,7 +157,7 @@ func TestLogoutHandlerRevokesSessionAndClearsCookie(t *testing.T) {
 		t.Fatalf("logout result = (%d, %q)", recorder.Code, service.revokedSessionID)
 	}
 	cookies := recorder.Result().Cookies()
-	if len(cookies) != 1 || cookies[0].Name != PortalSessionCookieName || cookies[0].MaxAge != -1 || !cookies[0].HttpOnly || !cookies[0].Secure || cookies[0].SameSite != http.SameSiteStrictMode {
+	if len(cookies) != 2 || cookies[0].Name != PortalSessionCookieName || cookies[1].Name != PortalCSRFCookieName || cookies[0].MaxAge != -1 || cookies[1].MaxAge != -1 || !cookies[0].HttpOnly || cookies[1].HttpOnly || !cookies[0].Secure || !cookies[1].Secure || cookies[0].SameSite != http.SameSiteStrictMode || cookies[1].SameSite != http.SameSiteStrictMode {
 		t.Fatalf("cleared cookie = %+v", cookies)
 	}
 }

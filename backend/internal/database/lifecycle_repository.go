@@ -79,57 +79,169 @@ WHERE status = 'revoked'
   AND verification_hash IS NOT NULL`
 
 const purgeExpiredUsageSQL = `
-DELETE FROM usage_records
-WHERE created_at <= $1`
+WITH candidates AS (
+    SELECT id
+    FROM usage_records
+    WHERE created_at <= $1
+    ORDER BY created_at, id
+    LIMIT $2
+)
+DELETE FROM usage_records AS usage
+USING candidates
+WHERE usage.id = candidates.id`
 
 const purgeExpiredOperationalEventsSQL = `
-DELETE FROM security_events
-WHERE event_type = 'operational_fault'
-  AND retain_until <= $1`
+SELECT n_api_p_purge_security_events($1, 'operational', $2)`
 
 const purgeExpiredSecurityEventsSQL = `
-DELETE FROM security_events
-WHERE event_type <> 'operational_fault'
-  AND retain_until <= $1`
+SELECT n_api_p_purge_security_events($1, 'security', $2)`
 
 const purgeExpiredAuditMetadataSQL = `
+WITH candidates AS (
+    SELECT records.id
+    FROM audit_records AS records
+    WHERE records.created_at <= $1
+      AND NOT EXISTS (SELECT 1 FROM audit_raw_content raw WHERE raw.audit_id = records.id)
+      AND NOT EXISTS (SELECT 1 FROM usage_records usage WHERE usage.audit_id = records.id)
+      AND NOT EXISTS (SELECT 1 FROM security_events events WHERE events.target_audit_id = records.id)
+    ORDER BY records.created_at, records.id
+    LIMIT $2
+)
 DELETE FROM audit_records AS records
-WHERE records.created_at <= $1
-  AND NOT EXISTS (SELECT 1 FROM audit_raw_content raw WHERE raw.audit_id = records.id)
-  AND NOT EXISTS (SELECT 1 FROM usage_records usage WHERE usage.audit_id = records.id)
-  AND NOT EXISTS (SELECT 1 FROM security_events events WHERE events.target_audit_id = records.id)`
+USING candidates
+WHERE records.id = candidates.id`
 
 const purgeExpiredServiceAccountsSQL = `
+WITH candidates AS (
+    SELECT accounts.id
+    FROM service_accounts AS accounts
+    WHERE accounts.status = 'disabled'
+      AND accounts.disabled_at IS NOT NULL
+      AND accounts.disabled_at <= $1
+      AND NOT EXISTS (SELECT 1 FROM api_keys keys WHERE keys.service_account_id = accounts.id)
+      AND NOT EXISTS (SELECT 1 FROM audit_records records WHERE records.service_account_id = accounts.id)
+      AND NOT EXISTS (SELECT 1 FROM usage_records usage WHERE usage.service_account_id = accounts.id)
+      AND NOT EXISTS (SELECT 1 FROM security_events events WHERE events.target_service_account_id = accounts.id)
+    ORDER BY accounts.disabled_at, accounts.id
+    LIMIT $2
+)
 DELETE FROM service_accounts AS accounts
-WHERE accounts.status = 'disabled'
-  AND accounts.disabled_at IS NOT NULL
-  AND accounts.disabled_at <= $1
-  AND NOT EXISTS (SELECT 1 FROM api_keys keys WHERE keys.service_account_id = accounts.id)
-  AND NOT EXISTS (SELECT 1 FROM audit_records records WHERE records.service_account_id = accounts.id)
-  AND NOT EXISTS (SELECT 1 FROM usage_records usage WHERE usage.service_account_id = accounts.id)
-  AND NOT EXISTS (SELECT 1 FROM security_events events WHERE events.target_service_account_id = accounts.id)`
+USING candidates
+WHERE accounts.id = candidates.id`
 
 const purgeExpiredRevokedKeysSQL = `
+WITH candidates AS (
+    SELECT keys.id
+    FROM api_keys AS keys
+    WHERE keys.status = 'revoked'
+      AND keys.revoked_at IS NOT NULL
+      AND keys.revoked_at <= $1
+      AND NOT EXISTS (SELECT 1 FROM audit_records records WHERE records.key_id = keys.id)
+      AND NOT EXISTS (SELECT 1 FROM usage_records usage WHERE usage.key_id = keys.id)
+      AND NOT EXISTS (SELECT 1 FROM security_events events WHERE events.target_key_id = keys.id)
+    ORDER BY keys.revoked_at, keys.id
+    LIMIT $2
+)
 DELETE FROM api_keys AS keys
-WHERE keys.status = 'revoked'
-  AND keys.revoked_at IS NOT NULL
-  AND keys.revoked_at <= $1
-  AND NOT EXISTS (SELECT 1 FROM audit_records records WHERE records.key_id = keys.id)
-  AND NOT EXISTS (SELECT 1 FROM usage_records usage WHERE usage.key_id = keys.id)
-  AND NOT EXISTS (SELECT 1 FROM security_events events WHERE events.target_key_id = keys.id)`
+USING candidates
+WHERE keys.id = candidates.id`
 
 const purgeExpiredDisabledIdentitiesSQL = `
+WITH candidates AS (
+    SELECT identities.id
+    FROM identities AS identities
+    WHERE identities.status = 'disabled'
+      AND identities.disabled_at IS NOT NULL
+      AND identities.disabled_at <= $1
+      AND NOT EXISTS (SELECT 1 FROM memberships memberships WHERE memberships.identity_id = identities.id)
+      AND NOT EXISTS (SELECT 1 FROM sessions sessions WHERE sessions.identity_id = identities.id)
+      AND NOT EXISTS (SELECT 1 FROM one_time_codes codes WHERE codes.identity_id = identities.id OR codes.issued_by_identity_id = identities.id)
+      AND NOT EXISTS (SELECT 1 FROM model_allowlist models WHERE models.updated_by_identity_id = identities.id)
+      AND NOT EXISTS (SELECT 1 FROM api_keys keys WHERE keys.identity_id = identities.id)
+      AND NOT EXISTS (SELECT 1 FROM service_accounts accounts WHERE accounts.responsible_identity_id = identities.id)
+      AND NOT EXISTS (SELECT 1 FROM audit_records records WHERE records.identity_id = identities.id OR records.responsible_identity_id = identities.id)
+      AND NOT EXISTS (SELECT 1 FROM usage_records usage WHERE usage.identity_id = identities.id OR usage.responsible_identity_id = identities.id)
+      AND NOT EXISTS (SELECT 1 FROM security_events events WHERE events.actor_identity_id = identities.id OR events.target_identity_id = identities.id)
+    ORDER BY identities.disabled_at, identities.id
+    LIMIT $2
+)
 DELETE FROM identities AS identities
-WHERE identities.status = 'disabled'
-  AND identities.disabled_at IS NOT NULL
-  AND identities.disabled_at <= $1
-  AND NOT EXISTS (SELECT 1 FROM memberships memberships WHERE memberships.identity_id = identities.id)
-  AND NOT EXISTS (SELECT 1 FROM api_keys keys WHERE keys.identity_id = identities.id)
-  AND NOT EXISTS (SELECT 1 FROM service_accounts accounts WHERE accounts.responsible_identity_id = identities.id)
-  AND NOT EXISTS (SELECT 1 FROM audit_records records WHERE records.identity_id = identities.id OR records.responsible_identity_id = identities.id)
-  AND NOT EXISTS (SELECT 1 FROM usage_records usage WHERE usage.identity_id = identities.id OR usage.responsible_identity_id = identities.id)
-  AND NOT EXISTS (SELECT 1 FROM security_events events WHERE events.actor_identity_id = identities.id OR events.target_identity_id = identities.id)
-  AND NOT EXISTS (SELECT 1 FROM one_time_codes codes WHERE codes.identity_id = identities.id OR codes.issued_by_identity_id = identities.id)`
+USING candidates
+WHERE identities.id = candidates.id`
+
+const purgeExpiredIdentitySessionsSQL = `
+WITH candidates AS (
+    SELECT sessions.id
+    FROM sessions
+    JOIN identities ON identities.id = sessions.identity_id
+    WHERE identities.status = 'disabled'
+      AND identities.disabled_at IS NOT NULL
+      AND identities.disabled_at <= $1
+    ORDER BY sessions.id
+    LIMIT $2
+)
+DELETE FROM sessions
+USING candidates
+WHERE sessions.id = candidates.id`
+
+const purgeExpiredIdentityCodesSQL = `
+WITH candidates AS (
+    SELECT codes.id
+    FROM one_time_codes AS codes
+    WHERE EXISTS (
+        SELECT 1
+        FROM identities
+        WHERE identities.status = 'disabled'
+          AND identities.disabled_at IS NOT NULL
+          AND identities.disabled_at <= $1
+          AND (identities.id = codes.identity_id OR identities.id = codes.issued_by_identity_id)
+    )
+    ORDER BY codes.id
+    LIMIT $2
+)
+DELETE FROM one_time_codes AS codes
+USING candidates
+WHERE codes.id = candidates.id`
+
+const clearExpiredModelPolicyUpdatersSQL = `
+WITH candidates AS (
+    SELECT models.model_id
+    FROM model_allowlist AS models
+    JOIN identities ON identities.id = models.updated_by_identity_id
+    WHERE identities.status = 'disabled'
+      AND identities.disabled_at IS NOT NULL
+      AND identities.disabled_at <= $1
+    ORDER BY models.model_id
+    LIMIT $2
+)
+UPDATE model_allowlist AS models
+SET updated_by_identity_id = NULL
+FROM candidates
+WHERE models.model_id = candidates.model_id`
+
+const purgeExpiredIdentityMembershipsSQL = `
+WITH candidates AS (
+    SELECT memberships.identity_id, memberships.team_id
+    FROM memberships
+    JOIN identities ON identities.id = memberships.identity_id
+    WHERE identities.status = 'disabled'
+      AND identities.disabled_at IS NOT NULL
+      AND identities.disabled_at <= $1
+      AND NOT EXISTS (
+          SELECT 1
+          FROM service_accounts
+          WHERE service_accounts.responsible_identity_id = memberships.identity_id
+            AND service_accounts.team_id = memberships.team_id
+      )
+    ORDER BY memberships.identity_id, memberships.team_id
+    LIMIT $2
+)
+DELETE FROM memberships
+USING candidates
+WHERE memberships.identity_id = candidates.identity_id
+  AND memberships.team_id = candidates.team_id`
+
+const metadataPurgeBatchSize = 1000
 
 func (r *Repository) ReadRawContent(ctx context.Context, lookup audit.RawContentLookup) (audit.RawContentRecord, error) {
 	if lookup.AuditID == "" || lookup.VisibleAt.IsZero() || (lookup.ContentKind != audit.ContentKindRequest && lookup.ContentKind != audit.ContentKindResponse) {
@@ -290,81 +402,79 @@ func (r *Repository) PurgeExpiredMetadata(ctx context.Context, purgeAt time.Time
 	if purgeAt.IsZero() {
 		return audit.MetadataPurgeResult{}, audit.ErrInvalidLifecycle
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return audit.MetadataPurgeResult{}, fmt.Errorf("begin metadata cleanup transaction: %w", err)
-	}
-	committed := false
-	defer func() {
-		if committed {
-			return
-		}
-		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
-			err = errors.Join(err, fmt.Errorf("roll back metadata cleanup transaction: %w", rollbackErr))
-		}
-	}()
 	retentionAt := purgeAt.UTC()
-	if _, err := tx.ExecContext(ctx, "SELECT set_config('n_api_p.retention_maintenance', 'on', true)"); err != nil {
-		return audit.MetadataPurgeResult{}, fmt.Errorf("enable metadata retention maintenance: %w", err)
+	usageCutoff := retentionAt.AddDate(-1, 0, 0)
+	ownershipCutoff := retentionAt.AddDate(-2, 0, 0)
+	var purgeErrors []error
+
+	if result.UsageRows, err = purgeMetadataRows(ctx, r.db, purgeExpiredUsageSQL, usageCutoff); err != nil {
+		purgeErrors = append(purgeErrors, fmt.Errorf("purge expired usage metadata: %w", err))
 	}
-	usageResult, err := tx.ExecContext(ctx, purgeExpiredUsageSQL, retentionAt.Add(-365*24*time.Hour))
+	if result.OperationalLogRows, err = purgeSecurityEvents(ctx, r.db, purgeExpiredOperationalEventsSQL, retentionAt); err != nil {
+		purgeErrors = append(purgeErrors, fmt.Errorf("purge expired operational metadata: %w", err))
+	}
+	if result.SecurityEventRows, err = purgeSecurityEvents(ctx, r.db, purgeExpiredSecurityEventsSQL, retentionAt); err != nil {
+		purgeErrors = append(purgeErrors, fmt.Errorf("purge expired security metadata: %w", err))
+	}
+	if result.AuditRows, err = purgeMetadataRows(ctx, r.db, purgeExpiredAuditMetadataSQL, ownershipCutoff); err != nil {
+		purgeErrors = append(purgeErrors, fmt.Errorf("purge expired audit metadata: %w", err))
+	}
+	if result.OwnershipRows, err = r.purgeExpiredOwnership(ctx, ownershipCutoff); err != nil {
+		purgeErrors = append(purgeErrors, err)
+	}
+
+	return result, errors.Join(purgeErrors...)
+}
+
+type metadataPurgeExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+type metadataPurgeQuerier interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func purgeMetadataRows(ctx context.Context, executor metadataPurgeExecutor, query string, cutoff time.Time) (int64, error) {
+	result, err := executor.ExecContext(ctx, query, cutoff, metadataPurgeBatchSize)
 	if err != nil {
-		return audit.MetadataPurgeResult{}, fmt.Errorf("purge expired usage metadata: %w", err)
+		return 0, err
 	}
-	if result.UsageRows, err = usageResult.RowsAffected(); err != nil {
-		return audit.MetadataPurgeResult{}, fmt.Errorf("count expired usage metadata: %w", err)
+	return result.RowsAffected()
+}
+
+func purgeSecurityEvents(ctx context.Context, querier metadataPurgeQuerier, query string, cutoff time.Time) (int64, error) {
+	var purged int64
+	if err := querier.QueryRowContext(ctx, query, cutoff, metadataPurgeBatchSize).Scan(&purged); err != nil {
+		return 0, err
 	}
-	operationalResult, err := tx.ExecContext(ctx, purgeExpiredOperationalEventsSQL, retentionAt)
-	if err != nil {
-		return audit.MetadataPurgeResult{}, fmt.Errorf("purge expired operational metadata: %w", err)
+	return purged, nil
+}
+
+func (r *Repository) purgeExpiredOwnership(ctx context.Context, cutoff time.Time) (purged int64, err error) {
+	var purgeErrors []error
+	for _, purge := range []struct {
+		name  string
+		query string
+		count bool
+	}{
+		{name: "identity sessions", query: purgeExpiredIdentitySessionsSQL},
+		{name: "identity one-time codes", query: purgeExpiredIdentityCodesSQL},
+		{name: "model-policy updater references", query: clearExpiredModelPolicyUpdatersSQL},
+		{name: "revoked-key ownership", query: purgeExpiredRevokedKeysSQL, count: true},
+		{name: "service-account ownership", query: purgeExpiredServiceAccountsSQL, count: true},
+		{name: "identity memberships", query: purgeExpiredIdentityMembershipsSQL},
+		{name: "identity ownership", query: purgeExpiredDisabledIdentitiesSQL, count: true},
+	} {
+		rows, purgeErr := purgeMetadataRows(ctx, r.db, purge.query, cutoff)
+		if purgeErr != nil {
+			purgeErrors = append(purgeErrors, fmt.Errorf("purge expired %s: %w", purge.name, purgeErr))
+			continue
+		}
+		if purge.count {
+			purged += rows
+		}
 	}
-	if result.OperationalLogRows, err = operationalResult.RowsAffected(); err != nil {
-		return audit.MetadataPurgeResult{}, fmt.Errorf("count expired operational metadata: %w", err)
-	}
-	securityResult, err := tx.ExecContext(ctx, purgeExpiredSecurityEventsSQL, retentionAt)
-	if err != nil {
-		return audit.MetadataPurgeResult{}, fmt.Errorf("purge expired security metadata: %w", err)
-	}
-	if result.SecurityEventRows, err = securityResult.RowsAffected(); err != nil {
-		return audit.MetadataPurgeResult{}, fmt.Errorf("count expired security metadata: %w", err)
-	}
-	auditResult, err := tx.ExecContext(ctx, purgeExpiredAuditMetadataSQL, retentionAt.Add(-730*24*time.Hour))
-	if err != nil {
-		return audit.MetadataPurgeResult{}, fmt.Errorf("purge expired audit metadata: %w", err)
-	}
-	if result.AuditRows, err = auditResult.RowsAffected(); err != nil {
-		return audit.MetadataPurgeResult{}, fmt.Errorf("count expired audit metadata: %w", err)
-	}
-	serviceResult, err := tx.ExecContext(ctx, purgeExpiredServiceAccountsSQL, retentionAt.Add(-730*24*time.Hour))
-	if err != nil {
-		return audit.MetadataPurgeResult{}, fmt.Errorf("purge expired service-account ownership: %w", err)
-	}
-	if result.OwnershipRows, err = serviceResult.RowsAffected(); err != nil {
-		return audit.MetadataPurgeResult{}, fmt.Errorf("count expired service-account ownership: %w", err)
-	}
-	keyResult, err := tx.ExecContext(ctx, purgeExpiredRevokedKeysSQL, retentionAt.Add(-730*24*time.Hour))
-	if err != nil {
-		return audit.MetadataPurgeResult{}, fmt.Errorf("purge expired revoked-key ownership: %w", err)
-	}
-	keyRows, err := keyResult.RowsAffected()
-	if err != nil {
-		return audit.MetadataPurgeResult{}, fmt.Errorf("count expired revoked-key ownership: %w", err)
-	}
-	result.OwnershipRows += keyRows
-	identityResult, err := tx.ExecContext(ctx, purgeExpiredDisabledIdentitiesSQL, retentionAt.Add(-730*24*time.Hour))
-	if err != nil {
-		return audit.MetadataPurgeResult{}, fmt.Errorf("purge expired identity ownership: %w", err)
-	}
-	identityRows, err := identityResult.RowsAffected()
-	if err != nil {
-		return audit.MetadataPurgeResult{}, fmt.Errorf("count expired identity ownership: %w", err)
-	}
-	result.OwnershipRows += identityRows
-	if err := tx.Commit(); err != nil {
-		return audit.MetadataPurgeResult{}, fmt.Errorf("commit metadata cleanup transaction: %w", err)
-	}
-	committed = true
-	return result, nil
+	return purged, errors.Join(purgeErrors...)
 }
 
 var _ audit.LifecycleRepository = (*Repository)(nil)

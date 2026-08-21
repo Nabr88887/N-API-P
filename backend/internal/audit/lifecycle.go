@@ -149,9 +149,7 @@ func (job *LifecycleJob) Run(ctx context.Context) error {
 	if job == nil || job.repository == nil || job.now == nil || job.newTicker == nil {
 		return ErrInvalidLifecycle
 	}
-	if _, err := job.RunOnce(ctx, job.now().UTC()); err != nil {
-		return err
-	}
+	job.runScheduled(ctx)
 	ticker := job.newTicker(CleanupInterval)
 	if ticker == nil {
 		return ErrInvalidLifecycle
@@ -171,10 +169,15 @@ func (job *LifecycleJob) Run(ctx context.Context) error {
 				job.observeJob("metadata_cleanup", "failed")
 				return ErrLifecycleUnavailable
 			}
-			if _, err := job.RunOnce(ctx, job.now().UTC()); err != nil {
-				return err
-			}
+			job.runScheduled(ctx)
 		}
+	}
+}
+
+func (job *LifecycleJob) runScheduled(ctx context.Context) {
+	if _, err := job.RunOnce(ctx, job.now().UTC()); err != nil {
+		// RunOnce records the failed stage; the scheduler keeps the next retry alive.
+		return
 	}
 }
 

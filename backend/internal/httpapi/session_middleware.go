@@ -16,6 +16,7 @@ import (
 
 const (
 	PortalSessionCookieName = "__Host-n-api-p-session"
+	PortalCSRFCookieName    = "__Host-n-api-p-csrf"
 	CSRFHeaderName          = "X-CSRF-Token"
 )
 
@@ -90,12 +91,20 @@ func WritePortalSessionCookie(writer http.ResponseWriter, session access.PortalS
 		Name: PortalSessionCookieName, Value: session.Token, Path: "/",
 		Expires: session.ExpiresAt.UTC(), HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode,
 	})
+	http.SetCookie(writer, &http.Cookie{
+		Name: PortalCSRFCookieName, Value: session.CSRFToken, Path: "/",
+		Expires: session.ExpiresAt.UTC(), Secure: true, SameSite: http.SameSiteStrictMode,
+	})
 }
 
 func clearPortalSessionCookie(writer http.ResponseWriter) {
 	http.SetCookie(writer, &http.Cookie{
 		Name: PortalSessionCookieName, Path: "/", MaxAge: -1,
 		Expires: time.Unix(1, 0).UTC(), HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode,
+	})
+	http.SetCookie(writer, &http.Cookie{
+		Name: PortalCSRFCookieName, Path: "/", MaxAge: -1,
+		Expires: time.Unix(1, 0).UTC(), Secure: true, SameSite: http.SameSiteStrictMode,
 	})
 }
 
