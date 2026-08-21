@@ -50,7 +50,16 @@ type LifecycleCleanupResult struct {
 	DeletionLag              DeletionLagState
 	DeletedRawRows           int64
 	PurgedVerificationHashes int64
+	PurgedMetadata           MetadataPurgeResult
 	CompletedAt              time.Time
+}
+
+type MetadataPurgeResult struct {
+	UsageRows          int64
+	SecurityEventRows  int64
+	AuditRows          int64
+	OwnershipRows      int64
+	OperationalLogRows int64
 }
 
 type LifecycleRepository interface {
@@ -58,6 +67,7 @@ type LifecycleRepository interface {
 	ObserveDeletionLag(context.Context, time.Time) (DeletionLagState, error)
 	DeleteExpiredRawContent(context.Context, time.Time) (int64, error)
 	PurgeRevokedVerificationHashes(context.Context, time.Time) (int64, error)
+	PurgeExpiredMetadata(context.Context, time.Time) (MetadataPurgeResult, error)
 }
 
 type lifecycleTicker interface {
@@ -122,9 +132,16 @@ func (job *LifecycleJob) RunOnce(ctx context.Context, completedAt time.Time) (Li
 		return LifecycleCleanupResult{}, fmt.Errorf("%w: purge revoked verification hashes: %w", ErrLifecycleUnavailable, err)
 	}
 	job.observeJob("verification_hash_purge", "succeeded")
+	job.observeJob("metadata_cleanup", "running")
+	metadata, err := job.repository.PurgeExpiredMetadata(ctx, completedAt)
+	if err != nil {
+		job.observeJob("metadata_cleanup", "failed")
+		return LifecycleCleanupResult{}, fmt.Errorf("%w: purge expired metadata: %w", ErrLifecycleUnavailable, err)
+	}
+	job.observeJob("metadata_cleanup", "succeeded")
 	return LifecycleCleanupResult{
 		DeletionLag: lag, DeletedRawRows: deleted,
-		PurgedVerificationHashes: purged, CompletedAt: completedAt,
+		PurgedVerificationHashes: purged, PurgedMetadata: metadata, CompletedAt: completedAt,
 	}, nil
 }
 
@@ -145,11 +162,13 @@ func (job *LifecycleJob) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			job.observeJob("raw_cleanup", "stopped")
 			job.observeJob("verification_hash_purge", "stopped")
+			job.observeJob("metadata_cleanup", "stopped")
 			return nil
 		case _, ok := <-ticker.Chan():
 			if !ok {
 				job.observeJob("raw_cleanup", "failed")
 				job.observeJob("verification_hash_purge", "failed")
+				job.observeJob("metadata_cleanup", "failed")
 				return ErrLifecycleUnavailable
 			}
 			if _, err := job.RunOnce(ctx, job.now().UTC()); err != nil {

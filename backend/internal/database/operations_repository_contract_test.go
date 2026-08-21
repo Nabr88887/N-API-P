@@ -39,3 +39,10 @@ func TestOperationalTransitionInsertIsParameterizedAndContentFree(t *testing.T) 
 		}
 	}
 }
+
+func TestOperationalTransitionTimestampParameterIsExplicitlyTyped(t *testing.T) {
+	query := strings.ToLower(appendOperationalEventSQL)
+	if strings.Count(query, "$3::timestamptz") != 2 {
+		t.Fatalf("operational transition query must cast its timestamp parameter in both uses: %s", appendOperationalEventSQL)
+	}
+}

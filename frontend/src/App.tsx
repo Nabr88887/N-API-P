@@ -99,7 +99,7 @@ function roleName(role: Role): string {
   return roleProfiles[role].label
 }
 
-export function App({ role = 'system_administrator', employeeClient: injectedEmployeeClient, teamClient: injectedTeamClient, adminClient: injectedAdminClient, teamID = '' }: { role?: Role; employeeClient?: EmployeePortalClient; teamClient?: TeamPortalClient; adminClient?: AdminPortalClient; teamID?: string }) {
+export function App({ role = 'system_administrator', employeeClient: injectedEmployeeClient, teamClient: injectedTeamClient, adminClient: injectedAdminClient, teamID = '', identityEmail = '' }: { role?: Role; employeeClient?: EmployeePortalClient; teamClient?: TeamPortalClient; adminClient?: AdminPortalClient; teamID?: string; identityEmail?: string }) {
   const profile = roleProfiles[role]
   const [activeSection, setActiveSection] = useState('Overview')
   const [navigationOpen, setNavigationOpen] = useState(false)
@@ -371,7 +371,7 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
             >
               <span className="avatar" aria-hidden="true">MC</span>
               <span className="profile-copy">
-                <strong>Mira Chen</strong>
+                <strong>{identityEmail || 'Mira Chen'}</strong>
                 <small>{roleName(role)}</small>
               </span>
               <ChevronRight className="profile-chevron" size={16} aria-hidden="true" />
@@ -520,7 +520,7 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
               </button>
             </div>
             <dl className="session-details">
-              <div><dt>Account</dt><dd>mira.chen@company.internal</dd></div>
+              <div><dt>Account</dt><dd>{identityEmail || 'mira.chen@company.internal'}</dd></div>
               <div><dt>Role</dt><dd>{roleName(role)}</dd></div>
               <div><dt>Session</dt><dd>Internal network · active</dd></div>
             </dl>

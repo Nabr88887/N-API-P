@@ -104,6 +104,17 @@ WHERE k.id = $2
   AND i.status = 'active'
 RETURNING k.id::text, k.identity_id::text`
 
+const resolvePersonalTeamIDSQL = `
+SELECT m.team_id::text
+FROM memberships AS m
+JOIN identities AS i ON i.id = m.identity_id
+JOIN teams AS t ON t.id = m.team_id
+WHERE m.identity_id = $1
+  AND i.status = 'active'
+  AND t.status = 'active'
+ORDER BY m.team_id
+LIMIT 1`
+
 func (r *Repository) CreatePersonalKey(ctx context.Context, record access.PersonalKeyRecord) error {
 	return r.withTransaction(ctx, "create personal key", func(tx *sql.Tx) error {
 		var status access.IdentityStatus
@@ -283,6 +294,16 @@ func (r *Repository) RecordPersonalKeyUse(ctx context.Context, use access.Person
 		return access.AuthenticatedPersonalKey{}, fmt.Errorf("record personal key use: %w", err)
 	}
 	return authenticated, nil
+}
+
+func (r *Repository) ResolvePersonalTeamID(ctx context.Context, identityID string) (string, error) {
+	var teamID string
+	if err := r.db.QueryRowContext(ctx, resolvePersonalTeamIDSQL, identityID).Scan(&teamID); errors.Is(err, sql.ErrNoRows) {
+		return "", access.ErrInvalidAPIKey
+	} else if err != nil {
+		return "", fmt.Errorf("resolve personal team: %w", err)
+	}
+	return teamID, nil
 }
 
 func isPersonalKeyNameConflict(err error) bool {

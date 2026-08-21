@@ -76,6 +76,7 @@ type ChatProxyConfig struct {
 	Retention     time.Duration
 	ResponseLimit int64
 	Metrics       *observability.Metrics
+	Rejections    RejectionRecorder
 }
 
 type ChatProxyHandler struct {
@@ -90,6 +91,7 @@ type ChatProxyHandler struct {
 	retention     time.Duration
 	responseLimit int64
 	metrics       *observability.Metrics
+	rejections    RejectionRecorder
 }
 
 func NewChatProxyHandler(config ChatProxyConfig) (*ChatProxyHandler, error) {
@@ -122,7 +124,7 @@ func NewChatProxyHandler(config ChatProxyConfig) (*ChatProxyHandler, error) {
 		upstream: config.Upstream, capture: config.Capture, finalizer: config.Finalizer,
 		usage: config.Usage, policy: config.Policy, limiter: config.Limiter, now: now,
 		newID: newID, retention: retention, responseLimit: responseLimit,
-		metrics: config.Metrics,
+		metrics: config.Metrics, rejections: config.Rejections,
 	}, nil
 }
 
@@ -142,6 +144,7 @@ func (handler *ChatProxyHandler) ServeHTTP(writer http.ResponseWriter, request *
 	}
 	caller, ok := chatCallerFromContext(request.Context())
 	if !ok {
+		handler.recordRejection(request, RejectionAuthentication, RejectionCodeInvalidAPIKey, nil, "", 0)
 		writeChatError(writer, httpapi.CodeInvalidAPIKey)
 		return
 	}
@@ -149,6 +152,7 @@ func (handler *ChatProxyHandler) ServeHTTP(writer http.ResponseWriter, request *
 		caller.RequestID = requestID
 	}
 	if !validChatCaller(caller) {
+		handler.recordRejection(request, RejectionAuthentication, RejectionCodeInvalidAPIKey, nil, "", 0)
 		writeChatError(writer, httpapi.CodeInvalidAPIKey)
 		return
 	}
@@ -159,6 +163,7 @@ func (handler *ChatProxyHandler) ServeHTTP(writer http.ResponseWriter, request *
 	body, err := ReadBoundedJSONBody(request.Body, request.ContentLength, DefaultJSONRequestBodyLimit)
 	if err != nil {
 		if errors.Is(err, ErrRequestTooLarge) {
+			handler.recordRejection(request, RejectionRequestSize, RejectionCodeRequestTooLarge, &caller, "", requestObservedBytes(request, DefaultJSONRequestBodyLimit))
 			writeChatError(writer, httpapi.CodeRequestTooLarge)
 			return
 		}
@@ -183,6 +188,7 @@ func (handler *ChatProxyHandler) ServeHTTP(writer http.ResponseWriter, request *
 	if err := handler.policy.Authorize(request.Context(), chatRequest.Model); err != nil {
 		switch {
 		case errors.Is(err, policy.ErrModelNotAllowed):
+			handler.recordRejection(request, RejectionModelPolicy, RejectionCodeModelNotAllowed, &caller, "", 0)
 			writeChatError(writer, httpapi.CodeModelNotAllowed)
 		case errors.Is(err, policy.ErrInvalidModelID):
 			writeChatError(writer, httpapi.CodeInvalidRequest)
@@ -195,6 +201,7 @@ func (handler *ChatProxyHandler) ServeHTTP(writer http.ResponseWriter, request *
 	if err != nil {
 		var rateErr *RateLimitError
 		if errors.As(err, &rateErr) {
+			handler.recordRejection(request, RejectionTrafficLimit, RejectionCodeRateLimited, &caller, rateErr.Rule, 0)
 			writer.Header().Set("Retry-After", retryAfterHeader(rateErr.RetryAfter))
 			writeChatError(writer, httpapi.CodeRateLimited)
 			return
@@ -684,6 +691,31 @@ func safeCallerFact(value string) bool {
 		}
 	}
 	return true
+}
+
+func (handler *ChatProxyHandler) recordRejection(request *http.Request, class RejectionClass, code RejectionErrorCode, caller *ChatCaller, rule LimitRule, observedBytes int64) {
+	if handler == nil || handler.rejections == nil || request == nil {
+		return
+	}
+	requestID, ok := observability.RequestIDFromContext(request.Context())
+	if !ok || requestID == "" {
+		return
+	}
+	var attribution *RejectionAttribution
+	if caller != nil {
+		attribution = &RejectionAttribution{Owner: caller.TrafficOwner, KeyID: caller.KeyID}
+	}
+	_ = handler.rejections.Record(request.Context(), Rejection{
+		Class: class, Attribution: attribution, Rule: rule, RequestID: requestID,
+		ObservedAt: handler.now().UTC(), ObservedBytes: observedBytes, ErrorCode: code,
+	})
+}
+
+func requestObservedBytes(request *http.Request, limit int64) int64 {
+	if request != nil && request.ContentLength > 0 {
+		return request.ContentLength
+	}
+	return limit + 1
 }
 
 func writeChatError(writer http.ResponseWriter, code httpapi.ErrorCode) {

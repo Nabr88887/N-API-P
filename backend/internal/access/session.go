@@ -38,6 +38,20 @@ type ActivePortalSession struct {
 	ReauthenticatedUntil *time.Time
 }
 
+// PortalIdentity is the minimum server-owned identity projection exposed to
+// the browser session. It intentionally contains no password, token, or
+// verification material.
+type PortalIdentity struct {
+	ID      string
+	Email   string
+	Role    Role
+	TeamIDs []string
+}
+
+type PortalIdentityReader interface {
+	ReadPortalIdentity(context.Context, string) (PortalIdentity, error)
+}
+
 type SessionService struct {
 	repository PortalSessionRepository
 	now        func() time.Time

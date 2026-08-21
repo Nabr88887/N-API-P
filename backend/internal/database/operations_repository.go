@@ -63,9 +63,9 @@ LIMIT $6`
 
 const appendOperationalEventSQL = `
 INSERT INTO security_events (
-    id, event_type, request_id, outcome, detail_code, occurred_at
+    id, event_type, request_id, outcome, detail_code, occurred_at, retain_until
 ) VALUES (
-    gen_random_uuid(), 'operational_fault', gen_random_uuid(), $2, $1, $3
+    gen_random_uuid(), 'operational_fault', gen_random_uuid(), $2, $1, $3::timestamptz, $3::timestamptz + INTERVAL '30 days'
 )`
 
 type operationalEventCursor struct {

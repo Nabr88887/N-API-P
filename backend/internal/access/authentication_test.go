@@ -110,8 +110,8 @@ func TestAuthenticationUnknownEmailLimiterAllowsFiveConcurrentAttempts(t *testin
 			t.Fatalf("Login() call %d error = %v, want ErrInvalidCredentials", index, err)
 		}
 	}
-	if got := len(passwords.verificationCalls()); got != loginFailureLimit {
-		t.Fatalf("password verification calls = %d, want %d", got, loginFailureLimit)
+	if got := len(passwords.verificationCalls()); got != len(errorsByCall) {
+		t.Fatalf("password verification calls = %d, want one dummy verification per attempt (%d)", got, len(errorsByCall))
 	}
 
 	service.now = func() time.Time { return fixedNow.Add(loginLockDuration) }
@@ -121,8 +121,8 @@ func TestAuthenticationUnknownEmailLimiterAllowsFiveConcurrentAttempts(t *testin
 	if err != ErrInvalidCredentials {
 		t.Fatalf("Login() at lock expiry error = %v, want ErrInvalidCredentials", err)
 	}
-	if got := len(passwords.verificationCalls()); got != loginFailureLimit+1 {
-		t.Fatalf("password verification calls after expiry = %d, want %d", got, loginFailureLimit+1)
+	if got := len(passwords.verificationCalls()); got != len(errorsByCall)+1 {
+		t.Fatalf("password verification calls after expiry = %d, want %d", got, len(errorsByCall)+1)
 	}
 }
 

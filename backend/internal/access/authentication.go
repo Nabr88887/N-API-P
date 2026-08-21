@@ -172,10 +172,9 @@ func (service *AuthenticationService) Login(ctx context.Context, input LoginInpu
 
 	eligible := candidate.Found && candidate.Status == IdentityStatusActive && candidate.PasswordHash != "" &&
 		(candidate.LockedUntil == nil || !candidate.LockedUntil.After(now))
+	unknownAllowed := true
 	if !candidate.Found {
-		if !service.limiter.allow(email, now) {
-			return PortalSession{}, ErrInvalidCredentials
-		}
+		unknownAllowed = service.limiter.allow(email, now)
 	}
 	verifyHash := service.dummyHash
 	if eligible {
@@ -185,7 +184,7 @@ func (service *AuthenticationService) Login(ctx context.Context, input LoginInpu
 	if err != nil {
 		return PortalSession{}, ErrAuthenticationUnavailable
 	}
-	if !valid || !eligible {
+	if !valid || !eligible || !unknownAllowed {
 		if candidate.Found && eligible {
 			err = service.repository.CompleteLogin(ctx, LoginCompletion{
 				Candidate: candidate, AttemptedAt: now, VerifiedPasswordHash: candidate.PasswordHash,

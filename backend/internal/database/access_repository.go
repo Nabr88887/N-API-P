@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -68,6 +69,20 @@ SELECT id::text, email, status, password_hash, failed_login_attempts,
        failed_login_window_started_at, locked_until
 FROM identities
 WHERE email = $1`
+
+const readPortalIdentitySQL = `
+SELECT id::text, email, role
+FROM identities
+WHERE id = $1
+  AND status = 'active'`
+
+const readPortalIdentityTeamsSQL = `
+SELECT m.team_id::text
+FROM memberships AS m
+JOIN teams AS t ON t.id = m.team_id
+WHERE m.identity_id = $1
+  AND t.status = 'active'
+ORDER BY m.team_id`
 
 const lockLoginIdentitySQL = `
 SELECT status, password_hash, failed_login_attempts,
@@ -301,6 +316,34 @@ func (r *Repository) FindLoginCandidate(ctx context.Context, lookup access.Login
 		candidate.LockedUntil = &value
 	}
 	return candidate, nil
+}
+
+func (r *Repository) ReadPortalIdentity(ctx context.Context, identityID string) (access.PortalIdentity, error) {
+	var identity access.PortalIdentity
+	if strings.TrimSpace(identityID) == "" {
+		return access.PortalIdentity{}, access.ErrIdentityNotFound
+	}
+	if err := r.db.QueryRowContext(ctx, readPortalIdentitySQL, identityID).Scan(&identity.ID, &identity.Email, &identity.Role); errors.Is(err, sql.ErrNoRows) {
+		return access.PortalIdentity{}, access.ErrIdentityNotFound
+	} else if err != nil {
+		return access.PortalIdentity{}, fmt.Errorf("read portal identity: %w", err)
+	}
+	rows, err := r.db.QueryContext(ctx, readPortalIdentityTeamsSQL, identity.ID)
+	if err != nil {
+		return access.PortalIdentity{}, fmt.Errorf("read portal identity teams: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var teamID string
+		if err := rows.Scan(&teamID); err != nil {
+			return access.PortalIdentity{}, fmt.Errorf("scan portal identity team: %w", err)
+		}
+		identity.TeamIDs = append(identity.TeamIDs, teamID)
+	}
+	if err := rows.Err(); err != nil {
+		return access.PortalIdentity{}, fmt.Errorf("read portal identity teams: %w", err)
+	}
+	return identity, nil
 }
 
 func (r *Repository) CompleteLogin(ctx context.Context, completion access.LoginCompletion) error {

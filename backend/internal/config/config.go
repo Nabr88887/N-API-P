@@ -39,6 +39,7 @@ const (
 
 type Config struct {
 	ListenAddress               string
+	PortalOrigin                string
 	DatabaseURL                 string
 	NewAPIBaseURL               *url.URL
 	NewAPITokenFile             string
@@ -148,6 +149,11 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 	if _, _, err := net.SplitHostPort(listenAddress); err != nil {
 		return Config{}, errors.New("N_API_P_LISTEN_ADDRESS must be a valid host:port address")
 	}
+	portalOrigin := optional(lookup, "N_API_P_PORTAL_ORIGIN", "https://n-api-p.internal")
+	parsedOrigin, err := url.Parse(portalOrigin)
+	if err != nil || parsedOrigin.Scheme != "https" || parsedOrigin.Host == "" || parsedOrigin.User != nil || parsedOrigin.Path != "" || parsedOrigin.RawQuery != "" || parsedOrigin.Fragment != "" {
+		return Config{}, errors.New("N_API_P_PORTAL_ORIGIN must be an HTTPS origin")
+	}
 
 	retentionMaxDays, err := optionalInt(
 		lookup,
@@ -172,6 +178,7 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 
 	return Config{
 		ListenAddress:               listenAddress,
+		PortalOrigin:                parsedOrigin.String(),
 		DatabaseURL:                 databaseURL,
 		NewAPIBaseURL:               newAPIURL,
 		NewAPITokenFile:             newAPITokenFile,

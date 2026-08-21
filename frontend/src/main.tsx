@@ -1,7 +1,8 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 
-import { App } from './App'
+import { Portal } from './Portal'
+import { createPortalClient } from './portal-api'
 
 const rootElement = document.getElementById('root')
 if (rootElement === null) {
@@ -10,6 +11,6 @@ if (rootElement === null) {
 
 createRoot(rootElement).render(
   <StrictMode>
-    <App />
+    <Portal client={createPortalClient()} />
   </StrictMode>,
 )

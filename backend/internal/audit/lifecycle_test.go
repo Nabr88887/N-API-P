@@ -14,6 +14,7 @@ func TestLifecycleJobRunOnceObservesLagBeforeCleanupAndPurgesRevokedHashes(t *te
 		lag:            DeletionLagState{Critical: true, OverdueSince: &overdueSince},
 		deletedRawRows: 4,
 		purgedHashes:   2,
+		purgedMetadata: MetadataPurgeResult{UsageRows: 3, SecurityEventRows: 2, AuditRows: 1},
 	}
 	job, err := NewLifecycleJob(repository)
 	if err != nil {
@@ -24,10 +25,10 @@ func TestLifecycleJobRunOnceObservesLagBeforeCleanupAndPurgesRevokedHashes(t *te
 	if err != nil {
 		t.Fatalf("RunOnce() error = %v", err)
 	}
-	if got := repository.calls; len(got) != 3 || got[0] != "observe" || got[1] != "delete" || got[2] != "purge" {
-		t.Fatalf("repository calls = %v, want observe/delete/purge", got)
+	if got := repository.calls; len(got) != 4 || got[0] != "observe" || got[1] != "delete" || got[2] != "purge" || got[3] != "metadata" {
+		t.Fatalf("repository calls = %v, want observe/delete/purge/metadata", got)
 	}
-	if result.DeletedRawRows != 4 || result.PurgedVerificationHashes != 2 || !result.DeletionLag.Critical || !result.CompletedAt.Equal(now) {
+	if result.DeletedRawRows != 4 || result.PurgedVerificationHashes != 2 || result.PurgedMetadata.UsageRows != 3 || result.PurgedMetadata.SecurityEventRows != 2 || result.PurgedMetadata.AuditRows != 1 || !result.DeletionLag.Critical || !result.CompletedAt.Equal(now) {
 		t.Fatalf("cleanup result = %+v", result)
 	}
 }
@@ -101,6 +102,7 @@ type lifecycleRepositoryFake struct {
 	lag            DeletionLagState
 	deletedRawRows int64
 	purgedHashes   int64
+	purgedMetadata MetadataPurgeResult
 	observeErr     error
 	deleteErr      error
 	purgeErr       error
@@ -128,6 +130,11 @@ func (repository *lifecycleRepositoryFake) DeleteExpiredRawContent(context.Conte
 func (repository *lifecycleRepositoryFake) PurgeRevokedVerificationHashes(context.Context, time.Time) (int64, error) {
 	repository.calls = append(repository.calls, "purge")
 	return repository.purgedHashes, repository.purgeErr
+}
+
+func (repository *lifecycleRepositoryFake) PurgeExpiredMetadata(context.Context, time.Time) (MetadataPurgeResult, error) {
+	repository.calls = append(repository.calls, "metadata")
+	return repository.purgedMetadata, nil
 }
 
 type fakeLifecycleTicker struct {
