@@ -25,6 +25,10 @@ server {
     error_log /var/log/nginx/n-api-p-error.log warn;
 
     location = /v1/chat/completions {
+        # The application owns the exact 2 MiB structured rejection/audit
+        # contract; do not let Nginx replace it with an unstructured 413.
+        client_max_body_size 0;
+
         proxy_http_version 1.1;
         proxy_set_header Connection "";
         proxy_set_header Host $host;
@@ -33,8 +37,13 @@ server {
         proxy_set_header X-Request-ID $request_id;
 
         proxy_buffering off;
+        proxy_request_buffering off;
         proxy_cache off;
         gzip off;
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 10m;
+        send_timeout 10m;
 
         proxy_pass http://n_api_p_application;
     }
@@ -50,6 +59,10 @@ server {
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-Request-ID $request_id;
 
+        proxy_connect_timeout 2s;
+        proxy_send_timeout 5s;
+        proxy_read_timeout 5s;
+
         proxy_pass http://n_api_p_application;
     }
 
@@ -60,6 +73,11 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-Request-ID $request_id;
+
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 10m;
+        send_timeout 10m;
 
         proxy_pass http://n_api_p_application;
     }

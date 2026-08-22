@@ -16,6 +16,8 @@ FROM golang:1.25.12@sha256:d2e20dc1b35aefd666909163e4ace41efb521359aa2ce31fff59d
 
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
+ARG VERSION
+ARG REVISION
 
 ENV GOSUMDB="sum.golang.org https://sum.golang.google.cn"
 
@@ -27,20 +29,36 @@ RUN go mod download
 COPY backend/ ./
 COPY --from=frontend-build /workspace/backend/internal/web/static/build ./internal/web/static/build
 
-RUN CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
-    go build -trimpath -ldflags="-s -w" -o /out/n-api-p ./cmd/n-api-p
+RUN case "$VERSION" in ""|latest|*placeholder*|*[!A-Za-z0-9._-]*) exit 1 ;; esac && \
+    case "$REVISION" in ""|*[!0-9a-f]*) exit 1 ;; esac && \
+    test "${#REVISION}" -eq 40 && \
+    CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
+    go build -trimpath -ldflags="-s -w" -o /out/n-api-p ./cmd/n-api-p && \
+    CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
+    go build -trimpath -ldflags="-s -w" -o /out/n-api-p-healthcheck ./cmd/n-api-p-healthcheck && \
+    CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
+    go build -trimpath -ldflags="-s -w" -o /out/n-api-p-migrate ./cmd/n-api-p-migrate
 
 FROM scratch
 
-ARG VERSION=0.0.0-task-9.4-placeholder
+ARG VERSION
+ARG REVISION
 
 LABEL org.opencontainers.image.title="N-API-P" \
-      org.opencontainers.image.version="$VERSION"
+      org.opencontainers.image.version="$VERSION" \
+      org.opencontainers.image.revision="$REVISION"
 
 COPY --from=go-build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=go-build /out/n-api-p /n-api-p
+COPY --from=go-build /out/n-api-p-healthcheck /n-api-p-healthcheck
+COPY --from=go-build /out/n-api-p-migrate /n-api-p-migrate
 
-# The current startup contract reads root-owned 0400 secret mounts directly.
+# The startup contract reads root-owned 0400 secret mounts directly. Runtime
+# configuration must add the hardening controls documented in deploy/RUNBOOK.md.
 USER 0:0
+
+STOPSIGNAL SIGTERM
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 CMD ["/n-api-p-healthcheck"]
 
 ENTRYPOINT ["/n-api-p"]
