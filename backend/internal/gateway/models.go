@@ -22,8 +22,9 @@ type ModelListPolicy interface {
 }
 
 type modelListEnvelope struct {
-	Object string        `json:"object"`
-	Data   []modelRecord `json:"data"`
+	Object  string        `json:"object"`
+	Data    []modelRecord `json:"data"`
+	Success *bool         `json:"success,omitempty"`
 }
 
 type modelRecord struct {
@@ -52,7 +53,7 @@ func NewModelListHandler(upstream ModelListUpstream, policy ModelListPolicy) (ht
 		decoder := json.NewDecoder(strings.NewReader(string(body)))
 		decoder.DisallowUnknownFields()
 		var envelope modelListEnvelope
-		if err := decoder.Decode(&envelope); err != nil || envelope.Object != "list" || len(envelope.Data) == 0 && !strings.Contains(string(body), `"data"`) {
+		if err := decoder.Decode(&envelope); err != nil || envelope.Object != "list" || envelope.Success != nil && !*envelope.Success || len(envelope.Data) == 0 && !strings.Contains(string(body), `"data"`) {
 			writeChatError(writer, httpapi.CodeUpstreamError)
 			return
 		}

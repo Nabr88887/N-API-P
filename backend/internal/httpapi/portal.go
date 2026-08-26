@@ -150,7 +150,9 @@ func NewPortalRouter(deps PortalRouterDependencies) (http.Handler, error) {
 	mux.Handle("DELETE /api/v1/sessions/current", sessionMiddleware.Wrap(guard.Wrap(logoutRoute, NewLogoutHandler(deps.Sessions))))
 	mux.Handle("POST /api/v1/sessions/current/reauthentications", sessionMiddleware.Wrap(guard.Wrap(reauthRoute, NewReauthenticationHandler(deps.Reauthentication))))
 	mux.Handle("/api/v1/me/", employeeRouter)
-	mux.Handle("/api/v1/teams/", teamRouter)
+	mux.Handle("GET /api/v1/teams/{teamID}/members", teamRouter)
+	mux.Handle("GET /api/v1/teams/{teamID}/usage", teamRouter)
+	mux.Handle("/api/v1/teams", adminRouter)
 	mux.Handle("/api/v1/", adminRouter)
 	return observability.NewRequestIDMiddleware(mux, observability.DefaultLogger()), nil
 }

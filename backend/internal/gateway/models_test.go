@@ -12,7 +12,7 @@ import (
 func TestModelListHandlerFiltersValidatedUpstreamModels(t *testing.T) {
 	upstream := &fakeModelUpstream{response: &NewAPIResponse{
 		StatusCode: http.StatusOK, ContentType: "application/json", RequestID: "upstream-models",
-		Body: io.NopCloser(strings.NewReader(`{"object":"list","data":[{"id":"gpt-allowed","object":"model","created":1,"owned_by":"internal"},{"id":"gpt-blocked","object":"model","created":2,"owned_by":"internal"}]}`)),
+		Body: io.NopCloser(strings.NewReader(`{"success":true,"object":"list","data":[{"id":"gpt-allowed","object":"model","created":1,"owned_by":"internal"},{"id":"gpt-blocked","object":"model","created":2,"owned_by":"internal"}]}`)),
 	}}
 	handler, err := NewModelListHandler(upstream, &fakeModelFilter{allowed: []string{"gpt-allowed"}})
 	if err != nil {
@@ -31,9 +31,11 @@ func TestModelListHandlerFiltersValidatedUpstreamModels(t *testing.T) {
 
 func TestModelListHandlerRejectsInvalidUpstreamData(t *testing.T) {
 	for name, body := range map[string]string{
-		"malformed":      `{"object":"list","data":[`,
-		"wrong envelope": `{"object":"models","data":[]}`,
-		"duplicate id":   `{"object":"list","data":[{"id":"gpt-a","object":"model","owned_by":"internal"},{"id":"gpt-a","object":"model","owned_by":"internal"}]}`,
+		"malformed":       `{"object":"list","data":[`,
+		"wrong envelope":  `{"object":"models","data":[]}`,
+		"failed envelope": `{"success":false,"object":"list","data":[]}`,
+		"unknown field":   `{"success":true,"object":"list","data":[],"unexpected":true}`,
+		"duplicate id":    `{"object":"list","data":[{"id":"gpt-a","object":"model","owned_by":"internal"},{"id":"gpt-a","object":"model","owned_by":"internal"}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			handler, err := NewModelListHandler(&fakeModelUpstream{response: &NewAPIResponse{
