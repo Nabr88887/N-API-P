@@ -16,6 +16,7 @@ FROM golang:1.25.12@sha256:d2e20dc1b35aefd666909163e4ace41efb521359aa2ce31fff59d
 
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
+ARG GOPROXY=https://proxy.golang.org
 ARG VERSION
 ARG REVISION
 
@@ -24,7 +25,12 @@ ENV GOSUMDB="sum.golang.org https://sum.golang.google.cn"
 WORKDIR /workspace/backend
 
 COPY backend/go.mod backend/go.sum ./
-RUN go mod download
+RUN case "$GOPROXY" in \
+      "https://proxy.golang.org"|"https://goproxy.cn") ;; \
+      *) exit 1 ;; \
+    esac && \
+    GOPROXY="$GOPROXY" go mod download && \
+    GOPROXY="$GOPROXY" go mod verify
 
 COPY backend/ ./
 COPY --from=frontend-build /workspace/backend/internal/web/static/build ./internal/web/static/build
