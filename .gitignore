@@ -8,6 +8,7 @@
 *.pfx
 secrets/
 credentials/
+local-demo/.runtime/
 
 # Logs and local runtime data
 *.log

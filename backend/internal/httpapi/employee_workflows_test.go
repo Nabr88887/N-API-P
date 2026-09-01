@@ -54,6 +54,18 @@ func TestPersonalKeyRevokeRejectsForeignResourceWithoutCallingOwnerOverride(t *t
 	}
 }
 
+func TestPersonalKeyRevokeReturnsNoContent(t *testing.T) {
+	service := &fakeEmployeePersonalKeys{}
+	handler := withEmployeeSession(NewPersonalKeyRevokeHandler(service), access.ActivePortalSession{IdentityID: "session-owner", SessionID: "session-1"})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/api/v1/me/personal-keys/key-1", nil)
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusNoContent || service.revokeInput.IdentityID != "session-owner" || service.revokeInput.KeyID != "key-1" {
+		t.Fatalf("revoke response/input = (%d, %#v), want 204 and session-owned key", recorder.Code, service.revokeInput)
+	}
+}
+
 func TestPersonalKeyListUsesSessionOwnerAndOpaquePagination(t *testing.T) {
 	service := &fakeEmployeePersonalKeys{page: access.PersonalKeyPage{Keys: []access.PersonalKey{{ID: "10000000-0000-0000-0000-000000000001", IdentityID: "session-owner", Name: "workstation", Prefix: "nap_12345678", Status: access.PersonalKeyStatusActive, CreatedAt: time.Date(2026, 8, 11, 1, 0, 0, 0, time.UTC)}}, NextCursor: &access.PersonalKeyCursor{ID: "10000000-0000-0000-0000-000000000001", CreatedAt: time.Date(2026, 8, 11, 1, 0, 0, 0, time.UTC)}}}
 	handler := withEmployeeSession(NewPersonalKeyListHandler(service), access.ActivePortalSession{IdentityID: "session-owner"})
@@ -70,6 +82,28 @@ func TestPersonalKeyListUsesSessionOwnerAndOpaquePagination(t *testing.T) {
 	}
 	if !response.Pagination.HasMore || response.Pagination.NextCursor == "" || response.Data[0].OwnerAccountID != "session-owner" {
 		t.Fatalf("key page = %#v, want opaque next cursor and owner metadata", response)
+	}
+}
+
+func TestPersonalKeyListReturnsRevokedLifecycleMetadata(t *testing.T) {
+	revokedAt := time.Date(2026, 8, 27, 8, 0, 0, 0, time.UTC)
+	service := &fakeEmployeePersonalKeys{page: access.PersonalKeyPage{Keys: []access.PersonalKey{{
+		ID: "10000000-0000-0000-0000-000000000001", IdentityID: "session-owner", Name: "workstation", Prefix: "nap_12345678",
+		Status: access.PersonalKeyStatusRevoked, CreatedAt: revokedAt.Add(-time.Hour), RevokedAt: &revokedAt,
+	}}}}
+	handler := withEmployeeSession(NewPersonalKeyListHandler(service), access.ActivePortalSession{IdentityID: "session-owner"})
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/me/personal-keys", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("list response status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	var response PagedResponse[Key]
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode revoked key page: %v", err)
+	}
+	if len(response.Data) != 1 || response.Data[0].Status != KeyStatusRevoked || response.Data[0].RevokedAt == nil || !response.Data[0].RevokedAt.Equal(revokedAt) {
+		t.Fatalf("revoked key page = %#v, want retained revoked lifecycle metadata", response)
 	}
 }
 

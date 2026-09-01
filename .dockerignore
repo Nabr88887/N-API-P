@@ -13,6 +13,15 @@ openspec
 secrets
 tmp
 
+# Local demo runtime contains generated credentials, configuration, and
+# private keys. The derived demo image needs only helper binaries and the
+# combined CA bundle; keep all future runtime files out by default.
+local-demo/.runtime/*
+!local-demo/.runtime/bin/
+!local-demo/.runtime/bin/**
+!local-demo/.runtime/tls/
+!local-demo/.runtime/tls/ca-certificates.crt
+
 *.key
 *.log
 *.p12

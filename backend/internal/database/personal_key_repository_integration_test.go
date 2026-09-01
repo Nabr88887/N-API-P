@@ -80,6 +80,23 @@ func TestPersonalKeyRepositoryCreateListRevokeAndAuthenticationInvalidation(t *t
 	if err := service.Revoke(context.Background(), access.RevokePersonalKeyInput{IdentityID: accessEmployeeID, KeyID: issuance.Key.ID}); err != nil {
 		t.Fatalf("Revoke() error = %v", err)
 	}
+	keys, err = service.List(context.Background(), accessEmployeeID)
+	if err != nil {
+		t.Fatalf("List() after revocation error = %v", err)
+	}
+	var revokedKey *access.PersonalKey
+	for index := range keys {
+		if keys[index].ID == issuance.Key.ID {
+			revokedKey = &keys[index]
+			break
+		}
+	}
+	if revokedKey == nil {
+		t.Fatal("List() after revocation omitted the retained lifecycle record")
+	}
+	if revokedKey.Status != access.PersonalKeyStatusRevoked || revokedKey.RevokedAt == nil {
+		t.Fatalf("revoked key metadata = %#v, want status revoked and revoked_at", revokedKey)
+	}
 	if _, err := service.Authenticate(context.Background(), secret); !errors.Is(err, access.ErrInvalidAPIKey) {
 		t.Fatalf("Authenticate() after revocation error = %v, want ErrInvalidAPIKey", err)
 	}

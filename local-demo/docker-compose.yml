@@ -1,0 +1,115 @@
+name: n-api-p-local-demo
+
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: n_api_p_demo
+      POSTGRES_USER: n_api_p_demo
+      POSTGRES_PASSWORD: ${DEMO_DB_PASSWORD}
+    volumes:
+      - demo-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U n_api_p_demo -d n_api_p_demo"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  secrets-init:
+    image: alpine:3.22
+    volumes:
+      - ./.runtime/source:/source:ro
+      - demo-secrets:/runtime
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["cp /source/newapi-token /runtime/newapi-token && cp /source/audit-master-key /runtime/audit-master-key && chmod 400 /runtime/newapi-token /runtime/audit-master-key"]
+
+  recovery-init:
+    image: alpine:3.22
+    volumes:
+      - ./.runtime/source:/source:ro
+      - demo-recovery:/runtime
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["cp /source/metadata-manifest.json /runtime/metadata-manifest.json && chmod 400 /runtime/metadata-manifest.json"]
+
+  mock:
+    image: n-api-p-local-demo:latest
+    entrypoint: ["/n-api-p-demo-mock"]
+    environment:
+      N_API_P_DEMO_MOCK_LISTEN_ADDRESS: ":8443"
+      N_API_P_DEMO_MOCK_CERT_FILE: /run/demo-tls/mock.crt
+      N_API_P_DEMO_MOCK_KEY_FILE: /run/demo-tls/mock.key
+    volumes:
+      - ./.runtime/tls:/run/demo-tls:ro
+    expose: ["8443"]
+    networks:
+      default:
+        aliases: [demo-newapi]
+
+  migrate:
+    image: n-api-p-local-demo:latest
+    depends_on:
+      db:
+        condition: service_healthy
+      recovery-init:
+        condition: service_completed_successfully
+    entrypoint: ["/n-api-p-migrate"]
+    environment:
+      N_API_P_DATABASE_URL: ${DEMO_DATABASE_URL}
+      N_API_P_MIGRATION_EXPECTED_SOURCE_VERSION: "0"
+      N_API_P_MIGRATION_RECOVERY_MANIFEST_PATH: /run/recovery/metadata-manifest.json
+    volumes:
+      - demo-recovery:/run/recovery:ro
+
+  seed:
+    image: n-api-p-local-demo:latest
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    entrypoint: ["/n-api-p-demo-seed"]
+    environment:
+      N_API_P_DATABASE_URL: ${DEMO_DATABASE_URL}
+      N_API_P_DEMO_CREDENTIALS_FILE: /runtime/demo-credentials.txt
+    volumes:
+      - ./.runtime/credentials:/runtime
+
+  app:
+    image: n-api-p-local-demo:latest
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      secrets-init:
+        condition: service_completed_successfully
+      mock:
+        condition: service_started
+    environment:
+      N_API_P_DATABASE_URL: ${DEMO_DATABASE_URL}
+      N_API_P_NEWAPI_BASE_URL: https://demo-newapi:8443
+      N_API_P_NEWAPI_TOKEN_FILE: /run/secrets/newapi-token
+      N_API_P_AUDIT_KEY_FILE: /run/secrets/audit-master-key
+      N_API_P_LISTEN_ADDRESS: :8080
+      N_API_P_PORTAL_ORIGIN: https://localhost:8443
+      SSL_CERT_FILE: /run/demo-tls/ca-certificates.crt
+    volumes:
+      - demo-secrets:/run/secrets:ro
+      - ./.runtime/tls/ca-certificates.crt:/run/demo-tls/ca-certificates.crt:ro
+    expose: ["8080"]
+
+  proxy:
+    image: nginx:alpine
+    depends_on:
+      app:
+        condition: service_started
+    ports:
+      - "127.0.0.1:8443:443"
+    volumes:
+      - ./.runtime/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./.runtime/tls:/etc/nginx/tls:ro
+
+volumes:
+  demo-db:
+  demo-secrets:
+  demo-recovery:
