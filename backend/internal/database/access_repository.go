@@ -865,7 +865,14 @@ const updateIdentityEmailSQL = `
 UPDATE identities
 SET email = $1,
     updated_at = $2
-WHERE id = $3`
+WHERE id = $3
+  AND status = 'active'`
+
+const lockIdentityForEmailChangeSQL = `
+SELECT status
+FROM identities
+WHERE id = $1
+FOR UPDATE`
 
 const revokeIdentityActivationCodesSQL = `
 UPDATE one_time_codes
@@ -879,6 +886,18 @@ func (r *Repository) ChangeIdentityEmail(ctx context.Context, record access.Emai
 	return r.withTransaction(ctx, "change identity email", func(tx *sql.Tx) error {
 		if err := requireActiveSystemAdministrator(ctx, tx, record.ChangedByIdentityID); err != nil {
 			return err
+		}
+
+		var status string
+		err := tx.QueryRowContext(ctx, lockIdentityForEmailChangeSQL, record.IdentityID).Scan(&status)
+		if errors.Is(err, sql.ErrNoRows) {
+			return access.ErrIdentityNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("lock identity for email change: %w", err)
+		}
+		if status != string(access.IdentityStatusActive) {
+			return access.ErrInvalidEmailChange
 		}
 
 		result, err := tx.ExecContext(ctx, updateIdentityEmailSQL, record.Email, record.ChangedAt, record.IdentityID)
@@ -902,7 +921,7 @@ func (r *Repository) ChangeIdentityEmail(ctx context.Context, record access.Emai
 		); err != nil {
 			return fmt.Errorf("revoke identity activation codes: %w", err)
 		}
-		return nil
+		return appendSecurityEventTx(ctx, tx, record.Event)
 	})
 }
 

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup } from '@testing-library/react'
 
 import { App } from './App'
-import type { EmployeePortalClient } from './employee-api'
+import type { EmployeePortalClient, KeyIssuance } from './employee-api'
 import type { TeamPortalClient } from './team-api'
 import type { AdminPortalClient, HealthResponse } from './admin-api'
 
@@ -41,8 +41,11 @@ describe('App', () => {
     const user = userEvent.setup()
     render(<App role="system_administrator" />)
 
-    expect(screen.getByRole('searchbox', { name: 'Search administration' })).toBeInTheDocument()
     expect(screen.getByRole('table', { name: 'Recent activity' })).toBeInTheDocument()
+    expect(screen.getByText('Activity data is not available in this overview.')).toBeInTheDocument()
+    expect(screen.queryByText('Mira Chen')).not.toBeInTheDocument()
+    expect(screen.queryByText('1,248')).not.toBeInTheDocument()
+    expect(screen.queryByText('12 models available')).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Open session details' }))
     expect(screen.getByRole('dialog', { name: 'Session details' })).toBeInTheDocument()
@@ -142,6 +145,31 @@ describe('App', () => {
     expect(client.createPersonalKey).toHaveBeenCalledWith('laptop')
   })
 
+  it('locks personal key creation while the request is pending', async () => {
+    const user = userEvent.setup()
+    const client = employeeClient()
+    let resolveCreate: (value: KeyIssuance) => void = () => {}
+    client.createPersonalKey = vi.fn().mockImplementation(() => new Promise<KeyIssuance>((resolve) => { resolveCreate = resolve }))
+    render(<App role="employee" employeeClient={client} />)
+
+    await user.click(screen.getByRole('link', { name: 'My keys' }))
+    await screen.findByRole('table', { name: 'Personal API keys' })
+    await user.click(screen.getByRole('button', { name: 'Create personal key' }))
+    await user.type(screen.getByRole('textbox', { name: 'Key name' }), 'laptop')
+    await user.click(screen.getByRole('button', { name: 'Create key' }))
+
+    const pendingButton = await screen.findByRole('button', { name: 'Creating…' })
+    expect(pendingButton).toBeDisabled()
+    await user.click(pendingButton)
+    expect(client.createPersonalKey).toHaveBeenCalledOnce()
+
+    await act(async () => resolveCreate({
+      key: { id: 'key-2', kind: 'personal', owner_account_id: 'employee-1', name: 'laptop', prefix: 'nap_87654321', status: 'active', created_at: '2026-08-11T02:00:00Z' },
+      credential: { value: 'nap_one_time_secret' },
+    }))
+    expect(await screen.findByRole('dialog', { name: 'New personal key' })).toBeInTheDocument()
+  })
+
   it('requires confirmation before revoking an employee key', async () => {
     const user = userEvent.setup()
     const client = employeeClient()
@@ -192,6 +220,52 @@ describe('App', () => {
 
     await user.selectOptions(screen.getByRole('combobox', { name: 'Usage scope' }), 'employee-1')
     await waitFor(() => expect(client.listTeamUsage).toHaveBeenCalledWith('team-1', undefined, 'employee-1'))
+  })
+
+  it('lets a team administrator switch between every assigned team', async () => {
+    const user = userEvent.setup()
+    const client = teamClient()
+    client.listTeamMembers = vi.fn().mockImplementation(async (teamID: string) => ({
+      data: [{ account_id: `employee-${teamID}`, email: `${teamID}@example.internal`, role: 'employee', status: 'active', joined_at: '2026-08-11T01:00:00Z' }],
+      pagination: { has_more: false },
+    }))
+    render(<App role="team_administrator" teamID="team-1" teamIDs={['team-1', 'team-2']} teamClient={client} />)
+
+    await user.click(screen.getByRole('link', { name: 'Team members' }))
+    expect(await screen.findByText('team-1@example.internal')).toBeInTheDocument()
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Team scope' }), 'team-2')
+    expect(await screen.findByText('team-2@example.internal')).toBeInTheDocument()
+    expect(client.listTeamMembers).toHaveBeenCalledWith('team-2')
+  })
+
+  it('loads every member page before offering a team usage scope', async () => {
+    const user = userEvent.setup()
+    const client = teamClient()
+    client.listTeamMembers = vi.fn()
+      .mockResolvedValueOnce({ data: [{ account_id: 'employee-1', email: 'first@example.internal', role: 'employee', status: 'active', joined_at: '2026-08-11T01:00:00Z' }], pagination: { has_more: true, next_cursor: 'members-2' } })
+      .mockResolvedValueOnce({ data: [{ account_id: 'employee-2', email: 'second@example.internal', role: 'employee', status: 'active', joined_at: '2026-08-11T01:00:00Z' }], pagination: { has_more: false } })
+    render(<App role="team_administrator" teamID="team-1" teamClient={client} />)
+
+    await user.click(screen.getByRole('link', { name: 'Team usage' }))
+    expect(await screen.findByRole('combobox', { name: 'Usage scope' })).toHaveTextContent('second@example.internal')
+    expect(client.listTeamMembers).toHaveBeenLastCalledWith('team-1', 'members-2')
+  })
+
+  it('keeps team member pagination retryable after a failed page', async () => {
+    const user = userEvent.setup()
+    const client = teamClient()
+    client.listTeamMembers = vi.fn()
+      .mockResolvedValueOnce({ data: [{ account_id: 'employee-1', email: 'first@example.internal', role: 'employee', status: 'active', joined_at: '2026-08-11T01:00:00Z' }], pagination: { has_more: true, next_cursor: 'members-2' } })
+      .mockRejectedValueOnce(new Error('temporary failure'))
+      .mockResolvedValueOnce({ data: [{ account_id: 'employee-2', email: 'second@example.internal', role: 'employee', status: 'active', joined_at: '2026-08-11T01:00:00Z' }], pagination: { has_more: false } })
+    render(<App role="team_administrator" teamID="team-1" teamClient={client} />)
+
+    await user.click(screen.getByRole('link', { name: 'Team members' }))
+    await screen.findByText('first@example.internal')
+    await user.click(screen.getByRole('button', { name: 'Load more members' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Unable to load more members.')
+    await user.click(screen.getByRole('button', { name: 'Load more members' }))
+    expect(await screen.findByText('second@example.internal')).toBeInTheDocument()
   })
 
   it('invites an employee and reveals the activation value once', async () => {
@@ -335,6 +409,37 @@ describe('App', () => {
 	expect(client.updateAccount).toHaveBeenLastCalledWith('employee-1', { status: 'disabled', confirmed: true })
   })
 
+  it('updates an account company email and reflects the saved value locally', async () => {
+	const user = userEvent.setup()
+	const client = adminClient()
+	render(<App role="system_administrator" adminClient={client} />)
+	await user.click(screen.getByRole('link', { name: 'People & teams' }))
+	await screen.findByText('member@example.internal')
+	await user.click(screen.getByRole('button', { name: 'Manage access for member@example.internal' }))
+
+	const email = screen.getByRole('textbox', { name: 'Company email' })
+	await user.clear(email)
+	await user.type(email, 'renamed@example.internal')
+	await user.click(screen.getByRole('button', { name: 'Save email' }))
+
+	await waitFor(() => expect(client.updateAccount).toHaveBeenCalledWith('employee-1', { email: 'renamed@example.internal' }))
+	expect(screen.getByRole('table', { name: 'Accounts' })).toHaveTextContent('renamed@example.internal')
+  })
+
+  it('keeps email editing available after an update failure', async () => {
+	const user = userEvent.setup()
+	const client = adminClient()
+	client.updateAccount = vi.fn().mockRejectedValue(new Error('temporary'))
+	render(<App role="system_administrator" adminClient={client} />)
+	await user.click(screen.getByRole('link', { name: 'People & teams' }))
+	await screen.findByText('member@example.internal')
+	await user.click(screen.getByRole('button', { name: 'Manage access for member@example.internal' }))
+	await user.click(screen.getByRole('button', { name: 'Save email' }))
+
+	expect(await screen.findByRole('alert')).toHaveTextContent('Unable to update this email.')
+	expect(screen.getByRole('button', { name: 'Save email' })).toBeEnabled()
+  })
+
   it('creates a group key and saves the model and retention policies after confirmation', async () => {
 	const user = userEvent.setup()
 	const client = adminClient()
@@ -361,6 +466,41 @@ describe('App', () => {
 	expect(client.replaceRetentionPolicy).toHaveBeenCalledWith(7, true)
   })
 
+  it('loads additional group-key pages without replacing earlier keys', async () => {
+	const user = userEvent.setup()
+	const client = adminClient()
+	client.listServiceKeys = vi.fn()
+		.mockResolvedValueOnce({ data: [{ id: 'key-1', kind: 'service', service_account_id: 'service-1', team_id: 'team-1', name: 'primary', prefix: 'nap_primary1', status: 'active', created_at: '2026-08-11T01:00:00Z' }], pagination: { has_more: true, next_cursor: 'keys-2' } })
+		.mockResolvedValueOnce({ data: [{ id: 'key-2', kind: 'service', service_account_id: 'service-1', team_id: 'team-1', name: 'retired', prefix: 'nap_retired1', status: 'revoked', created_at: '2026-08-10T01:00:00Z' }], pagination: { has_more: false } })
+	render(<App role="system_administrator" adminClient={client} />)
+	await user.click(screen.getByRole('link', { name: 'Service accounts' }))
+	await user.click(await screen.findByRole('button', { name: 'Manage keys for ci-agent' }))
+	expect(await screen.findByRole('table', { name: 'Group keys for ci-agent' })).toHaveTextContent('primary')
+	await user.click(screen.getByRole('button', { name: 'Load more group keys' }))
+	await waitFor(() => expect(client.listServiceKeys).toHaveBeenLastCalledWith('service-1', { cursor: 'keys-2' }))
+	expect(screen.getByRole('table', { name: 'Group keys for ci-agent' })).toHaveTextContent('retired')
+  })
+
+  it('clears the previous service account keys before loading another account', async () => {
+	const user = userEvent.setup()
+	const client = adminClient()
+	client.listServiceAccounts = vi.fn().mockResolvedValue({ data: [
+	  { id: 'service-1', team_id: 'team-1', responsible_account_id: 'employee-1', name: 'ci-agent', status: 'active', created_at: '2026-08-11T01:00:00Z' },
+	  { id: 'service-2', team_id: 'team-1', responsible_account_id: 'employee-1', name: 'release-agent', status: 'active', created_at: '2026-08-10T01:00:00Z' },
+	], pagination: { has_more: false } })
+	client.listServiceKeys = vi.fn()
+	  .mockResolvedValueOnce({ data: [{ id: 'key-1', kind: 'service', service_account_id: 'service-1', team_id: 'team-1', name: 'ci-only', prefix: 'nap_ci_only', status: 'active', created_at: '2026-08-11T01:00:00Z' }], pagination: { has_more: false } })
+	  .mockResolvedValueOnce({ data: [], pagination: { has_more: false } })
+	render(<App role="system_administrator" adminClient={client} />)
+	await user.click(screen.getByRole('link', { name: 'Service accounts' }))
+	await user.click(await screen.findByRole('button', { name: 'Manage keys for ci-agent' }))
+	await screen.findByText('ci-only')
+	await user.click(screen.getByRole('button', { name: 'Close' }))
+	await user.click(screen.getByRole('button', { name: 'Manage keys for release-agent' }))
+	await waitFor(() => expect(screen.queryByText('ci-only')).not.toBeInTheDocument())
+	expect(screen.getByRole('table', { name: 'Group keys for release-agent' })).toHaveTextContent('No group keys yet.')
+  })
+
   it('adds the first model to an empty global allowlist before confirmed save', async () => {
 	const user = userEvent.setup()
 	const client = adminClient()
@@ -378,6 +518,55 @@ describe('App', () => {
 	expect(client.replaceModelAllowlist).toHaveBeenCalledWith([
 	  expect.objectContaining({ id: 'gpt-internal', status: 'allowed' }),
 	], true)
+  })
+
+  it('saves a complete non-negative decimal model price tuple', async () => {
+	const user = userEvent.setup()
+	const client = adminClient()
+	render(<App role="system_administrator" adminClient={client} />)
+	await user.click(screen.getByRole('link', { name: 'Model policy' }))
+	await screen.findByRole('table', { name: 'Global model allowlist' })
+	await user.type(screen.getByRole('textbox', { name: 'Input unit price for gpt-test' }), '0.001')
+	await user.type(screen.getByRole('textbox', { name: 'Output unit price for gpt-test' }), '0.002')
+	await user.type(screen.getByRole('textbox', { name: 'Price version for gpt-test' }), '2026-09')
+	await user.click(screen.getByRole('button', { name: 'Save model policy' }))
+	await user.click(screen.getByRole('button', { name: 'Confirm model policy change' }))
+
+	expect(client.replaceModelAllowlist).toHaveBeenCalledWith([
+	  expect.objectContaining({ id: 'gpt-test', input_unit_price: '0.001', output_unit_price: '0.002', price_version: '2026-09' }),
+	], true)
+  })
+
+  it.each([
+	['partial price tuple', '0.001', '', '2026-09'],
+	['negative price', '-1', '0.002', '2026-09'],
+	['non-decimal price', '1e3', '0.002', '2026-09'],
+	['blank version', '0.001', '0.002', '   '],
+  ])('rejects an invalid model price tuple: %s', async (_label, inputPrice, outputPrice, version) => {
+	const user = userEvent.setup()
+	const client = adminClient()
+	render(<App role="system_administrator" adminClient={client} />)
+	await user.click(screen.getByRole('link', { name: 'Model policy' }))
+	await screen.findByRole('table', { name: 'Global model allowlist' })
+	await user.type(screen.getByRole('textbox', { name: 'Input unit price for gpt-test' }), inputPrice)
+	if (outputPrice) await user.type(screen.getByRole('textbox', { name: 'Output unit price for gpt-test' }), outputPrice)
+	await user.type(screen.getByRole('textbox', { name: 'Price version for gpt-test' }), version)
+	await user.click(screen.getByRole('button', { name: 'Save model policy' }))
+
+	expect(await screen.findByRole('alert')).toHaveTextContent('Model pricing must use a complete non-negative decimal tuple with a non-blank version.')
+	expect(client.replaceModelAllowlist).not.toHaveBeenCalled()
+  })
+
+  it('shows security events as an independent administrator workspace', async () => {
+	const user = userEvent.setup()
+	const client = adminClient()
+	client.listSecurityEvents = vi.fn().mockResolvedValue({ data: [{ id: 'security-1', event_type: 'login_lockout', actor_account_id: 'admin-1', target_account_id: 'employee-1', request_id: 'request-1', outcome: 'denied', occurred_at: '2026-08-14T09:00:00Z' }], pagination: { has_more: false } })
+	render(<App role="system_administrator" adminClient={client} />)
+
+	expect(screen.getByRole('navigation', { name: 'Primary navigation' })).toHaveTextContent('Security events')
+	await user.click(screen.getByRole('link', { name: 'Security events' }))
+	expect(await screen.findByRole('table', { name: 'Security events' })).toHaveTextContent('login_lockout')
+	expect(client.listOperationalEvents).not.toHaveBeenCalled()
   })
 
   it('loads later account and team pages without replacing the first page', async () => {
@@ -496,6 +685,7 @@ function adminClient(): AdminPortalClient {
 	inspectAudit: vi.fn(),
 	getOperationsHealth: vi.fn().mockResolvedValue({ state: 'healthy', components: [], checked_at: '2026-08-14T09:00:00Z' }),
 	listOperationalEvents: vi.fn().mockResolvedValue({ data: [], pagination: { has_more: false } }),
+	listSecurityEvents: vi.fn().mockResolvedValue({ data: [], pagination: { has_more: false } }),
 	reauthenticate: vi.fn().mockResolvedValue(undefined),
   }
 }

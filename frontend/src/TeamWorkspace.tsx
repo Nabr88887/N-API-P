@@ -1,11 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import type { UsageRecord } from './employee-api'
 import type { TeamMember, TeamPortalClient, TeamUsageAggregate } from './team-api'
+import { advanceCursor, collectAllPages } from './pagination'
 
 type TeamWorkspaceProps = {
   section: string
   teamID: string
+  teamIDs?: string[]
   client: TeamPortalClient
 }
 
@@ -17,7 +19,9 @@ const emptyAggregate: TeamUsageAggregate = {
   total_tokens: 0,
 }
 
-export function TeamWorkspace({ section, teamID, client }: TeamWorkspaceProps) {
+export function TeamWorkspace({ section, teamID, teamIDs = [], client }: TeamWorkspaceProps) {
+  const availableTeamIDs = Array.from(new Set(teamIDs.length ? teamIDs : teamID ? [teamID] : []))
+  const [selectedTeamID, setSelectedTeamID] = useState(teamID || availableTeamIDs[0] || '')
   const [members, setMembers] = useState<TeamMember[]>([])
   const [usage, setUsage] = useState<UsageRecord[]>([])
   const [aggregate, setAggregate] = useState<TeamUsageAggregate>(emptyAggregate)
@@ -26,30 +30,46 @@ export function TeamWorkspace({ section, teamID, client }: TeamWorkspaceProps) {
   const [selectedAccountID, setSelectedAccountID] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [paginationError, setPaginationError] = useState('')
+  const [membersLoading, setMembersLoading] = useState(false)
+  const [usageLoading, setUsageLoading] = useState(false)
+  const memberCursors = useRef(new Set<string>())
+  const usageCursors = useRef(new Set<string>())
+
+  function switchTeam(nextTeamID: string) {
+    setSelectedAccountID('')
+    setLoading(true)
+    setError('')
+    setPaginationError('')
+    setMembers([])
+    setUsage([])
+    setAggregate(emptyAggregate)
+    setMemberCursor(undefined)
+    setUsageCursor(undefined)
+    setSelectedTeamID(nextTeamID)
+  }
 
   useEffect(() => {
     let cancelled = false
-    if (!teamID) {
+    if (!selectedTeamID) {
       return () => { cancelled = true }
     }
+    const cursors = new Set<string>()
+    if (section === 'Team members') memberCursors.current = cursors
+    else usageCursors.current = cursors
     const load = section === 'Team members'
-      ? client.listTeamMembers(teamID).then((response) => {
+      ? client.listTeamMembers(selectedTeamID).then((response) => {
         if (!cancelled) {
-          setError('')
           setMembers(response.data)
-          setMemberCursor(response.pagination.next_cursor)
+          setMemberCursor(advanceCursor(response.pagination, cursors))
         }
       })
-      : Promise.all([
-        client.listTeamMembers(teamID),
-        selectedAccountID ? client.listTeamUsage(teamID, undefined, selectedAccountID) : client.listTeamUsage(teamID),
-      ]).then(([memberResponse, usageResponse]) => {
+      : Promise.all([loadAllMembers(client, selectedTeamID), selectedAccountID ? client.listTeamUsage(selectedTeamID, undefined, selectedAccountID) : client.listTeamUsage(selectedTeamID)]).then(([memberResponse, usageResponse]) => {
         if (!cancelled) {
-          setError('')
-          setMembers(memberResponse.data)
+          setMembers(memberResponse)
           setUsage(usageResponse.data)
           setAggregate(usageResponse.aggregate)
-          setUsageCursor(usageResponse.pagination.next_cursor)
+          setUsageCursor(advanceCursor(usageResponse.pagination, cursors))
         }
       })
     load.catch(() => {
@@ -58,23 +78,43 @@ export function TeamWorkspace({ section, teamID, client }: TeamWorkspaceProps) {
       if (!cancelled) setLoading(false)
     })
     return () => { cancelled = true }
-  }, [client, section, selectedAccountID, teamID])
+  }, [client, section, selectedAccountID, selectedTeamID])
 
   async function loadMoreMembers() {
-    if (!memberCursor) return
-    const response = await client.listTeamMembers(teamID, memberCursor)
-    setMembers((current) => [...current, ...response.data])
-    setMemberCursor(response.pagination.next_cursor)
+    if (!memberCursor || membersLoading || !selectedTeamID) return
+    setMembersLoading(true)
+    setPaginationError('')
+    try {
+      const response = await client.listTeamMembers(selectedTeamID, memberCursor)
+      const nextCursor = advanceCursor(response.pagination, memberCursors.current)
+      setMembers((current) => [...current, ...response.data.filter((item) => !current.some((existing) => existing.account_id === item.account_id))])
+      setMemberCursor(nextCursor)
+    } catch (failure: unknown) {
+      if (failure instanceof Error && failure.message === 'INVALID_PAGINATION_CURSOR') setMemberCursor(undefined)
+      setPaginationError('Unable to load more members.')
+    } finally {
+      setMembersLoading(false)
+    }
   }
 
   async function loadMoreUsage() {
-    if (!usageCursor) return
-    const response = selectedAccountID
-      ? await client.listTeamUsage(teamID, usageCursor, selectedAccountID)
-      : await client.listTeamUsage(teamID, usageCursor)
-    setUsage((current) => [...current, ...response.data])
-    setAggregate(response.aggregate)
-    setUsageCursor(response.pagination.next_cursor)
+    if (!usageCursor || usageLoading || !selectedTeamID) return
+    setUsageLoading(true)
+    setPaginationError('')
+    try {
+      const response = selectedAccountID
+        ? await client.listTeamUsage(selectedTeamID, usageCursor, selectedAccountID)
+        : await client.listTeamUsage(selectedTeamID, usageCursor)
+      const nextCursor = advanceCursor(response.pagination, usageCursors.current)
+      setUsage((current) => [...current, ...response.data.filter((item) => !current.some((existing) => existing.id === item.id))])
+      setAggregate(response.aggregate)
+      setUsageCursor(nextCursor)
+    } catch (failure: unknown) {
+      if (failure instanceof Error && failure.message === 'INVALID_PAGINATION_CURSOR') setUsageCursor(undefined)
+      setPaginationError('Unable to load more usage records.')
+    } finally {
+      setUsageLoading(false)
+    }
   }
 
   function usageOwnerLabel(record: UsageRecord): string {
@@ -84,7 +124,7 @@ export function TeamWorkspace({ section, teamID, client }: TeamWorkspaceProps) {
     return record.service_account_id ?? 'Unknown'
   }
 
-  if (!teamID) return <p className="error-state" role="alert">No assigned team is available for this session.</p>
+  if (!selectedTeamID) return <p className="error-state" role="alert">No assigned team is available for this session.</p>
   if (loading) return <p className="loading-state">Loading team data…</p>
   if (error) return <p className="error-state" role="alert">{error}</p>
 
@@ -93,6 +133,7 @@ export function TeamWorkspace({ section, teamID, client }: TeamWorkspaceProps) {
       <section className="activity-section team-workspace" aria-labelledby="team-members-title">
         <div className="section-heading-row">
           <div><p className="section-kicker">Read-only directory</p><h2 id="team-members-title">Team members</h2></div>
+          {availableTeamIDs.length > 1 && <TeamSelector teamIDs={availableTeamIDs} value={selectedTeamID} onChange={switchTeam} />}
         </div>
         <div className="table-wrap" tabIndex={0}>
           <table aria-label="Team members">
@@ -102,7 +143,8 @@ export function TeamWorkspace({ section, teamID, client }: TeamWorkspaceProps) {
             )) : <tr><td className="empty-row" colSpan={4}>No team members found.</td></tr>}</tbody>
           </table>
         </div>
-        {memberCursor && <div className="pagination-actions"><button className="button button-secondary" type="button" onClick={loadMoreMembers}>Load more members</button></div>}
+        {paginationError && <p className="error-state" role="alert">{paginationError}</p>}
+        {memberCursor && <div className="pagination-actions"><button className="button button-secondary" type="button" disabled={membersLoading} onClick={() => void loadMoreMembers()}>{membersLoading ? 'Loading…' : 'Load more members'}</button></div>}
       </section>
     )
   }
@@ -111,6 +153,7 @@ export function TeamWorkspace({ section, teamID, client }: TeamWorkspaceProps) {
     <section className="activity-section team-workspace" aria-labelledby="team-usage-title">
       <div className="section-heading-row">
         <div><p className="section-kicker">Content-free record</p><h2 id="team-usage-title">Team usage</h2></div>
+        {availableTeamIDs.length > 1 && <TeamSelector teamIDs={availableTeamIDs} value={selectedTeamID} onChange={switchTeam} />}
         <div className="scope-filter"><label className="field-label" htmlFor="usage-scope">Usage scope</label><select id="usage-scope" aria-label="Usage scope" value={selectedAccountID} onChange={(event) => setSelectedAccountID(event.target.value)}><option value="">All team members and services</option>{members.map((member) => <option key={member.account_id} value={member.account_id}>{member.email}</option>)}</select></div>
       </div>
       <section className="team-usage-summary metric-grid" aria-label="Team usage summary">
@@ -126,7 +169,17 @@ export function TeamWorkspace({ section, teamID, client }: TeamWorkspaceProps) {
           )) : <tr><td className="empty-row" colSpan={5}>No team usage records yet.</td></tr>}</tbody>
         </table>
       </div>
-      {usageCursor && <div className="pagination-actions"><button className="button button-secondary" type="button" onClick={loadMoreUsage}>Load more usage</button></div>}
+      {paginationError && <p className="error-state" role="alert">{paginationError}</p>}
+      {usageCursor && <div className="pagination-actions"><button className="button button-secondary" type="button" disabled={usageLoading} onClick={() => void loadMoreUsage()}>{usageLoading ? 'Loading…' : 'Load more usage'}</button></div>}
     </section>
   )
+}
+
+function TeamSelector({ teamIDs, value, onChange }: { teamIDs: string[]; value: string; onChange: (teamID: string) => void }) {
+  return <label className="field-label" htmlFor="team-scope">Team scope<select id="team-scope" aria-label="Team scope" value={value} onChange={(event) => onChange(event.target.value)}>{teamIDs.map((id) => <option key={id} value={id}>{id}</option>)}</select></label>
+}
+
+async function loadAllMembers(client: TeamPortalClient, teamID: string): Promise<TeamMember[]> {
+  const members = await collectAllPages((cursor) => client.listTeamMembers(teamID, cursor))
+  return members.filter((item, index) => members.findIndex((candidate) => candidate.account_id === item.account_id) === index)
 }

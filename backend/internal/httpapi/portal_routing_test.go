@@ -36,7 +36,7 @@ func TestPortalRouterKeepsTeamAndAdminRoutesOnTheirDeclaredHandlers(t *testing.T
 			Models: &fakeAdminModelPolicyService{}, Retention: &fakeAdminRetentionPolicyService{},
 			Administration: administration, Audits: &fakeAuditMetadataService{record: audit.Metadata{ID: auditID}},
 			RawView:    &fakeRawViewService{view: audit.RawView{AuditID: auditID}},
-			Operations: &fakeOperationsService{}, Offboarding: offboarding, ServiceAccount: serviceAccounts,
+			Operations: &fakeOperationsService{}, Offboarding: offboarding, ServiceAccount: serviceAccounts, Identity: &adminIdentityServiceFake{}, SecurityEvents: administration,
 		},
 	})
 	if err != nil {

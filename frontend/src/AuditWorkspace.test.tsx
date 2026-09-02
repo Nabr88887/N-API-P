@@ -70,5 +70,6 @@ function auditClient(): AdminPortalClient {
     inspectAudit: vi.fn().mockResolvedValue({ audit_id: '84000000-0000-0000-0000-000000000001', request: { prompt: '<script>prompt()</script>' }, response: { answer: '<img src=x onerror=response()>' } }),
     getOperationsHealth: vi.fn().mockResolvedValue({ state: 'healthy', components: [], checked_at: '2026-08-14T09:00:00Z' }),
     listOperationalEvents: vi.fn().mockResolvedValue({ data: [], pagination: { has_more: false } }),
+    listSecurityEvents: vi.fn().mockResolvedValue({ data: [], pagination: { has_more: false } }),
   }
 }

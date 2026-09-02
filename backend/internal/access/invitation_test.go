@@ -278,6 +278,9 @@ func TestActivationMapsPasswordInitializationFailureWithoutConsumingValue(t *tes
 
 func TestIdentityEmailChangePreservesImmutableIDAndOwnership(t *testing.T) {
 	repository, _, identityID := createPendingInvitation(t)
+	identity := repository.identities[identityID]
+	identity.Status = IdentityStatusActive
+	repository.identities[identityID] = identity
 	repository.ownedResources[identityID] = []string{"key-1", "usage-1", "audit-1"}
 	service := NewIdentityService(repository)
 	service.now = func() time.Time { return fixedNow }
@@ -291,7 +294,7 @@ func TestIdentityEmailChangePreservesImmutableIDAndOwnership(t *testing.T) {
 		t.Fatalf("ChangeEmail() error = %v", err)
 	}
 
-	identity := repository.identities[identityID]
+	identity = repository.identities[identityID]
 	if identity.ID != identityID {
 		t.Fatalf("identity ID = %q, want immutable %q", identity.ID, identityID)
 	}
@@ -304,6 +307,27 @@ func TestIdentityEmailChangePreservesImmutableIDAndOwnership(t *testing.T) {
 	resources := repository.ownedResources[identityID]
 	if len(resources) != 3 || resources[0] != "key-1" || resources[1] != "usage-1" || resources[2] != "audit-1" {
 		t.Fatalf("ownership changed after email update: %v", resources)
+	}
+}
+
+func TestIdentityEmailChangeRejectsPendingWithoutRevokingActivation(t *testing.T) {
+	repository, activation, identityID := createPendingInvitation(t)
+	service := NewIdentityService(repository)
+	service.now = func() time.Time { return fixedNow }
+
+	err := service.ChangeEmail(context.Background(), ChangeEmailInput{
+		Actor:      Actor{IdentityID: "admin-1", Role: RoleSystemAdministrator},
+		IdentityID: identityID,
+		Email:      "new.address@example.internal",
+	})
+	if !errors.Is(err, ErrInvalidEmailChange) {
+		t.Fatalf("ChangeEmail() error = %v, want ErrInvalidEmailChange", err)
+	}
+	if got := repository.identities[identityID].Email; got != activation.Email {
+		t.Fatalf("pending identity email = %q, want unchanged %q", got, activation.Email)
+	}
+	if repository.codesByIdentity[identityID][0].RevokedAt != nil {
+		t.Fatal("pending identity email change revoked its activation value")
 	}
 }
 
@@ -423,6 +447,9 @@ func (repository *memoryAccessRepository) ChangeIdentityEmail(_ context.Context,
 	identity, ok := repository.identities[record.IdentityID]
 	if !ok {
 		return ErrIdentityNotFound
+	}
+	if identity.Status != IdentityStatusActive {
+		return ErrInvalidEmailChange
 	}
 	for identityID, existing := range repository.identities {
 		if identityID != record.IdentityID && existing.Email == record.Email {

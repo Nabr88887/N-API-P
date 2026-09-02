@@ -15,6 +15,7 @@ import (
 )
 
 const demoModel = "demo-model"
+const demoModelCreated int64 = 1700000000
 
 type chatRequest struct {
 	Model  string `json:"model"`
@@ -50,7 +51,7 @@ func demoHandler() http.Handler {
 		}
 		writeJSON(writer, http.StatusOK, map[string]any{
 			"object": "list",
-			"data":   []map[string]string{{"id": demoModel, "object": "model", "owned_by": "local-demo"}},
+			"data":   []map[string]any{{"id": demoModel, "object": "model", "created": demoModelCreated, "owned_by": "local-demo"}},
 		})
 	})
 	mux.HandleFunc("POST /v1/chat/completions", func(writer http.ResponseWriter, request *http.Request) {

@@ -1,8 +1,9 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 
 import { AdminAPIError } from './admin-api'
 import type { AdminPortalClient, AuditMetadata, Pagination, RawAuditView } from './admin-api'
 import { ModalDialog } from './ModalDialog'
+import { advanceCursor } from './pagination'
 
 type Props = { client: AdminPortalClient }
 
@@ -17,13 +18,16 @@ export function AuditWorkspace({ client }: Props) {
   const [rawView, setRawView] = useState<RawAuditView | null>(null)
   const [reauthOpen, setReauthOpen] = useState(false)
   const [password, setPassword] = useState('')
+  const seenCursors = useRef(new Set<string>())
 
   useEffect(() => {
     let cancelled = false
+    const cursors = new Set<string>()
+    seenCursors.current = cursors
     client.listAudits().then((page) => {
       if (!cancelled) {
         setRecords(page.data)
-        setPagination(page.pagination)
+        setPagination({ ...page.pagination, next_cursor: advanceCursor(page.pagination, cursors) })
       }
     }).catch(() => {
       if (!cancelled) setError('Unable to load audit metadata.')
@@ -39,9 +43,11 @@ export function AuditWorkspace({ client }: Props) {
     setError('')
     try {
       const page = await client.listAudits({ cursor: pagination.next_cursor })
+      const nextCursor = advanceCursor(page.pagination, seenCursors.current)
       setRecords((current) => appendUnique(current, page.data))
-      setPagination(page.pagination)
-    } catch {
+      setPagination({ ...page.pagination, next_cursor: nextCursor })
+    } catch (failure: unknown) {
+      if (failure instanceof Error && failure.message === 'INVALID_PAGINATION_CURSOR') setPagination({ has_more: false })
       setError('Unable to load more audit metadata.')
     } finally {
       setPageLoading(false)

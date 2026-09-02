@@ -119,6 +119,7 @@ function adminClient(): AdminPortalClient {
     inspectAudit: async () => rawView,
     getOperationsHealth: async () => health,
     listOperationalEvents: async () => page([event]),
+    listSecurityEvents: async () => page([]),
     reauthenticate: async () => { reauthenticated = true },
   }
 }

@@ -95,6 +95,36 @@ type AdministrationInvitationPage struct {
 	NextCursor  string
 }
 
+type AdministrationSecurityEventFilter struct {
+	ActorIdentityID string
+	EventType       *string
+	Outcome         *SecurityEventOutcome
+	From            *time.Time
+	To              *time.Time
+	Cursor          string
+	Limit           int
+}
+
+type AdministrationSecurityEvent struct {
+	ID                     string
+	EventType              string
+	ActorIdentityID        string
+	TargetIdentityID       string
+	TargetServiceAccountID string
+	TargetKeyID            string
+	TargetAuditID          string
+	RequestID              string
+	Outcome                SecurityEventOutcome
+	Reason                 string
+	DetailCode             string
+	OccurredAt             time.Time
+}
+
+type AdministrationSecurityEventPage struct {
+	Events     []AdministrationSecurityEvent
+	NextCursor string
+}
+
 type TeamOperation string
 
 const (
@@ -172,6 +202,7 @@ type AdministrationRepository interface {
 	ListAdministrationAccounts(context.Context, AdministrationAccountFilter) (AdministrationAccountPage, error)
 	ListAdministrationTeams(context.Context, AdministrationTeamFilter) (AdministrationTeamPage, error)
 	ListAdministrationServiceAccounts(context.Context, AdministrationServiceAccountFilter) (AdministrationServiceAccountPage, error)
+	ListAdministrationSecurityEvents(context.Context, AdministrationSecurityEventFilter) (AdministrationSecurityEventPage, error)
 	GetAdministrationAccount(context.Context, string, string) (AdministrationAccount, error)
 	GetAdministrationTeam(context.Context, string, string) (AdministrationTeam, error)
 	GetAdministrationServiceAccount(context.Context, string, string) (ServiceAccount, error)
@@ -209,6 +240,26 @@ func (service *AdministrationService) ListServiceAccounts(ctx context.Context, a
 	}
 	filter.ActorIdentityID = strings.TrimSpace(actor.IdentityID)
 	return service.repository.ListAdministrationServiceAccounts(ctx, filter)
+}
+
+func (service *AdministrationService) ListSecurityEvents(ctx context.Context, actor Actor, filter AdministrationSecurityEventFilter) (AdministrationSecurityEventPage, error) {
+	if !isSystemAdministrator(actor) {
+		return AdministrationSecurityEventPage{}, ErrForbidden
+	}
+	if service == nil || service.repository == nil || !validAdministrationLimit(filter.Limit) || len(filter.Cursor) > 512 {
+		return AdministrationSecurityEventPage{}, ErrInvalidAdministrationRequest
+	}
+	if filter.EventType != nil && strings.TrimSpace(*filter.EventType) == "" {
+		return AdministrationSecurityEventPage{}, ErrInvalidAdministrationRequest
+	}
+	if filter.Outcome != nil && *filter.Outcome != SecurityEventSuccess && *filter.Outcome != SecurityEventDenied && *filter.Outcome != SecurityEventFailure {
+		return AdministrationSecurityEventPage{}, ErrInvalidAdministrationRequest
+	}
+	if filter.From != nil && filter.To != nil && filter.From.After(*filter.To) {
+		return AdministrationSecurityEventPage{}, ErrInvalidAdministrationRequest
+	}
+	filter.ActorIdentityID = strings.TrimSpace(actor.IdentityID)
+	return service.repository.ListAdministrationSecurityEvents(ctx, filter)
 }
 
 type AdministrationService struct {

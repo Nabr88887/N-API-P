@@ -62,6 +62,33 @@ func TestServiceAccountManagementIsSystemAdministratorOnly(t *testing.T) {
 	}
 }
 
+func TestServiceAccountKeyListingUsesBoundedOpaquePagination(t *testing.T) {
+	repository := &serviceAccountRepositoryFake{
+		listedServiceKeyPage: ServiceAccountKeyPage{
+			Keys:       []ServiceAccountKey{{ID: "key-2", ServiceAccountID: "service-1"}},
+			NextCursor: "opaque-next",
+		},
+	}
+	service := NewServiceAccountService(repository)
+	page, err := service.ListKeysPage(context.Background(), ListServiceAccountKeysInput{
+		Actor: Actor{IdentityID: " admin-1 ", Role: RoleSystemAdministrator}, ServiceAccountID: " service-1 ",
+	}, "opaque-current", 25)
+	if err != nil {
+		t.Fatalf("ListKeysPage() error = %v", err)
+	}
+	if len(page.Keys) != 1 || page.Keys[0].ID != "key-2" || page.NextCursor != "opaque-next" {
+		t.Fatalf("ListKeysPage() = %#v", page)
+	}
+	if repository.pageServiceAccountID != "service-1" || repository.pageActorIdentityID != "admin-1" || repository.pageCursor != "opaque-current" || repository.pageLimit != 25 {
+		t.Fatalf("page repository input = service %q actor %q cursor %q limit %d", repository.pageServiceAccountID, repository.pageActorIdentityID, repository.pageCursor, repository.pageLimit)
+	}
+	if _, err := service.ListKeysPage(context.Background(), ListServiceAccountKeysInput{
+		Actor: Actor{IdentityID: "admin-1", Role: RoleSystemAdministrator}, ServiceAccountID: "service-1",
+	}, "", MaxAdministrationPageSize+1); !errors.Is(err, ErrInvalidServiceAccountKey) {
+		t.Fatalf("ListKeysPage() oversized limit error = %v, want ErrInvalidServiceAccountKey", err)
+	}
+}
+
 func TestServiceAccountServiceTrimsAndValidatesOwnerInvariant(t *testing.T) {
 	repository := &serviceAccountRepositoryFake{}
 	service := NewServiceAccountService(repository)
@@ -269,8 +296,13 @@ type serviceAccountRepositoryFake struct {
 	createKeyErr              error
 	createKeyCalls            int
 	listedServiceKeys         []ServiceAccountKey
+	listedServiceKeyPage      ServiceAccountKeyPage
 	listKeysErr               error
 	listKeyCalls              int
+	pageServiceAccountID      string
+	pageActorIdentityID       string
+	pageCursor                string
+	pageLimit                 int
 	rotated                   ServiceAccountKeyRotation
 	rotateKeyErr              error
 	rotateKeyCalls            int
@@ -311,6 +343,15 @@ func (r *serviceAccountRepositoryFake) CreateServiceAccountKey(_ context.Context
 func (r *serviceAccountRepositoryFake) ListServiceAccountKeys(_ context.Context, _, _ string) ([]ServiceAccountKey, error) {
 	r.listKeyCalls++
 	return r.listedServiceKeys, r.listKeysErr
+}
+
+func (r *serviceAccountRepositoryFake) ListServiceAccountKeysPage(_ context.Context, serviceAccountID, actorIdentityID, cursor string, limit int) (ServiceAccountKeyPage, error) {
+	r.listKeyCalls++
+	r.pageServiceAccountID = serviceAccountID
+	r.pageActorIdentityID = actorIdentityID
+	r.pageCursor = cursor
+	r.pageLimit = limit
+	return r.listedServiceKeyPage, r.listKeysErr
 }
 
 func (r *serviceAccountRepositoryFake) RotateServiceAccountKey(_ context.Context, rotation ServiceAccountKeyRotation) (ServiceAccountKey, error) {

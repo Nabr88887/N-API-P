@@ -72,4 +72,34 @@ describe('admin portal client', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/operations/health', expect.objectContaining({ credentials: 'same-origin' }))
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/v1/operations/events?limit=50&cursor=opaque+cursor', expect.objectContaining({ credentials: 'same-origin' }))
   })
+
+  it('updates an account email through the bounded account endpoint', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 204 }))
+    const client = createAdminPortalClient()
+
+    await client.updateAccount('employee/1', { email: 'renamed@example.internal' })
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/users/employee%2F1', expect.objectContaining({
+      method: 'PATCH',
+      body: JSON.stringify({ email: 'renamed@example.internal' }),
+    }))
+  })
+
+  it('requests bounded security event pages independently from operations', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ data: [], pagination: { has_more: false } }), { status: 200 }))
+    const client = createAdminPortalClient()
+
+    await client.listSecurityEvents!({ cursor: 'opaque cursor' })
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/security-events?limit=50&cursor=opaque+cursor', expect.objectContaining({ credentials: 'same-origin' }))
+  })
+
+  it('requests bounded service-key pages with an opaque cursor', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ data: [], pagination: { has_more: false } }), { status: 200 }))
+    const client = createAdminPortalClient()
+
+    await client.listServiceKeys('service/1', { cursor: 'opaque cursor' })
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/service-accounts/service%2F1/keys?limit=50&cursor=opaque+cursor', expect.objectContaining({ credentials: 'same-origin' }))
+  })
 })

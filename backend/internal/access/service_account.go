@@ -78,6 +78,11 @@ type ListServiceAccountKeysInput struct {
 	ServiceAccountID string
 }
 
+type ServiceAccountKeyPage struct {
+	Keys       []ServiceAccountKey
+	NextCursor string
+}
+
 type RevokeServiceAccountKeyInput struct {
 	Actor            Actor
 	ServiceAccountID string
@@ -225,6 +230,7 @@ type ServiceAccountRepository interface {
 	ListServiceAccounts(context.Context, string) ([]ServiceAccount, error)
 	CreateServiceAccountKey(context.Context, ServiceAccountKeyRecord) (ServiceAccountKey, error)
 	ListServiceAccountKeys(context.Context, string, string) ([]ServiceAccountKey, error)
+	ListServiceAccountKeysPage(context.Context, string, string, string, int) (ServiceAccountKeyPage, error)
 	RotateServiceAccountKey(context.Context, ServiceAccountKeyRotation) (ServiceAccountKey, error)
 	RevokeServiceAccountKey(context.Context, ServiceAccountKeyRevocation) error
 	FindServiceAccountKeyCandidates(context.Context, string) ([]ServiceAccountKeyAuthenticationCandidate, error)
@@ -344,6 +350,17 @@ func (service *ServiceAccountService) ListKeys(ctx context.Context, input ListSe
 		return nil, ErrServiceAccountKeyNotFound
 	}
 	return service.repository.ListServiceAccountKeys(ctx, serviceAccountID, strings.TrimSpace(input.Actor.IdentityID))
+}
+
+func (service *ServiceAccountService) ListKeysPage(ctx context.Context, input ListServiceAccountKeysInput, cursor string, limit int) (ServiceAccountKeyPage, error) {
+	if !isSystemAdministrator(input.Actor) {
+		return ServiceAccountKeyPage{}, ErrForbidden
+	}
+	serviceAccountID := strings.TrimSpace(input.ServiceAccountID)
+	if service == nil || service.repository == nil || serviceAccountID == "" || limit < 1 || limit > 100 || len(cursor) > 512 {
+		return ServiceAccountKeyPage{}, ErrInvalidServiceAccountKey
+	}
+	return service.repository.ListServiceAccountKeysPage(ctx, serviceAccountID, strings.TrimSpace(input.Actor.IdentityID), cursor, limit)
 }
 
 func (service *ServiceAccountService) RevokeKey(ctx context.Context, input RevokeServiceAccountKeyInput) error {

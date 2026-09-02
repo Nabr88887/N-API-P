@@ -304,6 +304,7 @@ type ChangeEmailInput struct {
 	Actor      Actor
 	IdentityID string
 	Email      string
+	RequestID  string
 }
 
 type EmailChangeRecord struct {
@@ -311,6 +312,7 @@ type EmailChangeRecord struct {
 	Email               string
 	ChangedByIdentityID string
 	ChangedAt           time.Time
+	Event               SecurityEvent
 }
 
 // IdentityRepository updates an identity by immutable ID and atomically
@@ -322,10 +324,11 @@ type IdentityRepository interface {
 type IdentityService struct {
 	repository IdentityRepository
 	now        func() time.Time
+	newID      func() (string, error)
 }
 
 func NewIdentityService(repository IdentityRepository) *IdentityService {
-	return &IdentityService{repository: repository, now: time.Now}
+	return &IdentityService{repository: repository, now: time.Now, newID: newIdentityID}
 }
 
 func (service *IdentityService) ChangeEmail(ctx context.Context, input ChangeEmailInput) error {
@@ -336,12 +339,26 @@ func (service *IdentityService) ChangeEmail(ctx context.Context, input ChangeEma
 	if strings.TrimSpace(input.IdentityID) == "" || email == "" {
 		return ErrInvalidEmailChange
 	}
+	eventID, err := service.newID()
+	if err != nil {
+		return ErrSecurityAuditUnavailable
+	}
+	requestID := strings.TrimSpace(input.RequestID)
+	if requestID == "" {
+		requestID = eventID
+	} else if requestID, err = credentialLifecycleRequestID(requestID); err != nil {
+		return ErrInvalidEmailChange
+	}
+	changedAt := service.now().UTC()
 
-	err := service.repository.ChangeIdentityEmail(ctx, EmailChangeRecord{
+	err = service.repository.ChangeIdentityEmail(ctx, EmailChangeRecord{
 		IdentityID:          input.IdentityID,
 		Email:               email,
 		ChangedByIdentityID: input.Actor.IdentityID,
-		ChangedAt:           service.now().UTC(),
+		ChangedAt:           changedAt,
+		Event: SecurityEvent{ID: eventID, EventType: "email_change", ActorIdentityID: input.Actor.IdentityID,
+			TargetIdentityID: input.IdentityID, RequestID: requestID, Outcome: SecurityEventSuccess,
+			DetailCode: "email_changed", OccurredAt: changedAt},
 	})
 	if errors.Is(err, ErrEmailAlreadyExists) {
 		return ErrEmailAlreadyExists

@@ -113,7 +113,7 @@ WHERE m.identity_id = $1
   AND i.status = 'active'
   AND t.status = 'active'
 ORDER BY m.team_id
-LIMIT 1`
+LIMIT 2`
 
 func (r *Repository) CreatePersonalKey(ctx context.Context, record access.PersonalKeyRecord) error {
 	return r.withTransaction(ctx, "create personal key", func(tx *sql.Tx) error {
@@ -297,11 +297,24 @@ func (r *Repository) RecordPersonalKeyUse(ctx context.Context, use access.Person
 }
 
 func (r *Repository) ResolvePersonalTeamID(ctx context.Context, identityID string) (string, error) {
-	var teamID string
-	if err := r.db.QueryRowContext(ctx, resolvePersonalTeamIDSQL, identityID).Scan(&teamID); errors.Is(err, sql.ErrNoRows) {
-		return "", access.ErrInvalidAPIKey
-	} else if err != nil {
+	rows, err := r.db.QueryContext(ctx, resolvePersonalTeamIDSQL, identityID)
+	if err != nil {
 		return "", fmt.Errorf("resolve personal team: %w", err)
+	}
+	defer rows.Close()
+	var teamID string
+	count := 0
+	for rows.Next() {
+		if err := rows.Scan(&teamID); err != nil {
+			return "", fmt.Errorf("scan personal team: %w", err)
+		}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("iterate personal teams: %w", err)
+	}
+	if count != 1 || teamID == "" {
+		return "", access.ErrInvalidAPIKey
 	}
 	return teamID, nil
 }

@@ -162,17 +162,15 @@ func TestAccessRepositorySerializesActivationAndEmailChange(t *testing.T) {
 		if index == 0 {
 			return repository.ActivateIdentity(context.Background(), activationRecord(candidate, record.Email, record.ActivationHash, "encoded-password-hash", "62000000-0000-0000-0000-000000000024", accessNow))
 		}
-		return repository.ChangeIdentityEmail(context.Background(), access.EmailChangeRecord{
-			IdentityID: record.IdentityID, Email: "changed@example.internal", ChangedByIdentityID: accessAdminID, ChangedAt: accessNow,
-		})
+		return repository.ChangeIdentityEmail(context.Background(), emailChangeRecord(record.IdentityID, "changed@example.internal", accessAdminID, "72000000-0000-0000-0000-000000000024"))
 	})
-	if errorsByCall[1] != nil {
+	if errorsByCall[1] != nil && !errors.Is(errorsByCall[1], access.ErrInvalidEmailChange) {
 		t.Fatalf("concurrent ChangeIdentityEmail() error = %v", errorsByCall[1])
 	}
 	if errorsByCall[0] != nil && !errors.Is(errorsByCall[0], access.ErrActivationRejected) {
 		t.Fatalf("concurrent ActivateIdentity() error = %v, want nil or ErrActivationRejected", errorsByCall[0])
 	}
-	assertActivationEmailChangeOutcome(t, db, record.IdentityID, record.ActivationID, errorsByCall[0])
+	assertActivationEmailChangeOutcome(t, db, record.IdentityID, record.ActivationID, errorsByCall[0], errorsByCall[1])
 }
 
 func TestAccessRepositoryRollsBackActivationWhenCompletionEventFails(t *testing.T) {
@@ -214,34 +212,72 @@ func TestAccessRepositoryChangesEmailInPlaceAndRevokesOldCodes(t *testing.T) {
 	}
 	mustExec(t, db, `INSERT INTO api_keys (id, identity_id, kind, name, prefix, verification_hash, status) VALUES ($1, $2, 'personal', 'owned', 'nap_owned', $3, 'active')`, "42000000-0000-0000-0000-000000000030", record.IdentityID, []byte("owned-hash"))
 
-	err := repository.ChangeIdentityEmail(context.Background(), access.EmailChangeRecord{
-		IdentityID: record.IdentityID, Email: "new@example.internal", ChangedByIdentityID: accessAdminID, ChangedAt: accessNow,
-	})
+	err := repository.ChangeIdentityEmail(context.Background(), emailChangeRecord(record.IdentityID, "new@example.internal", accessAdminID, "72000000-0000-0000-0000-000000000030"))
 	if err != nil {
 		t.Fatalf("ChangeIdentityEmail() error = %v", err)
 	}
 	assertIdentityEmailAndKeyOwner(t, db, record.IdentityID, "new@example.internal")
 	assertCodeTimeSet(t, db, record.ActivationID, "revoked_at")
+	var eventType, targetID, outcome, detailCode string
+	if err := db.QueryRow(`SELECT event_type, target_identity_id::text, outcome, detail_code FROM security_events WHERE id = $1`, "72000000-0000-0000-0000-000000000030").Scan(&eventType, &targetID, &outcome, &detailCode); err != nil {
+		t.Fatalf("query email-change event: %v", err)
+	}
+	if eventType != "email_change" || targetID != record.IdentityID || outcome != "success" || detailCode != "email_changed" {
+		t.Fatalf("email-change event = %q/%q/%q/%q", eventType, targetID, outcome, detailCode)
+	}
 
-	err = repository.ChangeIdentityEmail(context.Background(), access.EmailChangeRecord{
-		IdentityID: record.IdentityID, Email: "other@example.internal", ChangedByIdentityID: accessEmployeeID, ChangedAt: accessNow,
-	})
+	err = repository.ChangeIdentityEmail(context.Background(), emailChangeRecord(record.IdentityID, "other@example.internal", accessEmployeeID, "72000000-0000-0000-0000-000000000031"))
 	if !errors.Is(err, access.ErrForbidden) {
 		t.Fatalf("untrusted ChangeIdentityEmail() error = %v, want ErrForbidden", err)
 	}
 
-	err = repository.ChangeIdentityEmail(context.Background(), access.EmailChangeRecord{
-		IdentityID: record.IdentityID, Email: "employee@example.internal", ChangedByIdentityID: accessAdminID, ChangedAt: accessNow,
-	})
+	err = repository.ChangeIdentityEmail(context.Background(), emailChangeRecord(record.IdentityID, "employee@example.internal", accessAdminID, "72000000-0000-0000-0000-000000000032"))
 	if !errors.Is(err, access.ErrEmailAlreadyExists) {
 		t.Fatalf("duplicate ChangeIdentityEmail() error = %v, want ErrEmailAlreadyExists", err)
 	}
 
-	err = repository.ChangeIdentityEmail(context.Background(), access.EmailChangeRecord{
-		IdentityID: "22000000-0000-0000-0000-000000000099", Email: "missing@example.internal", ChangedByIdentityID: accessAdminID, ChangedAt: accessNow,
-	})
+	err = repository.ChangeIdentityEmail(context.Background(), emailChangeRecord("22000000-0000-0000-0000-000000000099", "missing@example.internal", accessAdminID, "72000000-0000-0000-0000-000000000033"))
 	if !errors.Is(err, access.ErrIdentityNotFound) {
 		t.Fatalf("missing ChangeIdentityEmail() error = %v, want ErrIdentityNotFound", err)
+	}
+}
+
+func TestAccessRepositoryRejectsEmailChangeForPendingIdentity(t *testing.T) {
+	db, _ := migrateWorkforceSchema(t)
+	seedAccessOwners(t, db)
+	repository := NewRepository(db)
+	record := accessInvitationRecord("22000000-0000-0000-0000-000000000034", "32000000-0000-0000-0000-000000000034", "pending@example.internal")
+	if err := repository.CreateInvitation(context.Background(), record); err != nil {
+		t.Fatalf("CreateInvitation() error = %v", err)
+	}
+
+	err := repository.ChangeIdentityEmail(context.Background(), emailChangeRecord(record.IdentityID, "new-pending@example.internal", accessAdminID, "72000000-0000-0000-0000-000000000034"))
+	if !errors.Is(err, access.ErrInvalidEmailChange) {
+		t.Fatalf("ChangeIdentityEmail() error = %v, want ErrInvalidEmailChange", err)
+	}
+	var email, status string
+	if err := db.QueryRow(`SELECT email, status FROM identities WHERE id = $1`, record.IdentityID).Scan(&email, &status); err != nil {
+		t.Fatalf("query pending identity: %v", err)
+	}
+	if email != record.Email || status != string(access.IdentityStatusPending) {
+		t.Fatalf("pending identity = (%q, %q), want (%q, pending)", email, status, record.Email)
+	}
+	var revoked bool
+	if err := db.QueryRow(`SELECT revoked_at IS NOT NULL FROM one_time_codes WHERE id = $1`, record.ActivationID).Scan(&revoked); err != nil {
+		t.Fatalf("query pending activation code: %v", err)
+	}
+	if revoked {
+		t.Fatal("pending email change revoked the activation code")
+	}
+	assertCountWhere(t, db, "security_events", "target_identity_id", record.IdentityID, 1)
+}
+
+func emailChangeRecord(identityID, email, actorID, eventID string) access.EmailChangeRecord {
+	return access.EmailChangeRecord{
+		IdentityID: identityID, Email: email, ChangedByIdentityID: actorID, ChangedAt: accessNow,
+		Event: access.SecurityEvent{ID: eventID, EventType: "email_change", ActorIdentityID: actorID,
+			TargetIdentityID: identityID, RequestID: eventID, Outcome: access.SecurityEventSuccess,
+			DetailCode: "email_changed", OccurredAt: accessNow},
 	}
 }
 
@@ -361,7 +397,7 @@ func assertOneUsedOneRevokedCode(t *testing.T, db queryRower, identityID string)
 	}
 }
 
-func assertActivationEmailChangeOutcome(t *testing.T, db queryRower, identityID, codeID string, activationErr error) {
+func assertActivationEmailChangeOutcome(t *testing.T, db queryRower, identityID, codeID string, activationErr, emailErr error) {
 	t.Helper()
 	var email string
 	var status string
@@ -370,17 +406,23 @@ func assertActivationEmailChangeOutcome(t *testing.T, db queryRower, identityID,
 	if err := db.QueryRow(`SELECT i.email, i.status, c.used_at IS NOT NULL, c.revoked_at IS NOT NULL FROM identities AS i JOIN one_time_codes AS c ON c.identity_id = i.id WHERE i.id = $1 AND c.id = $2`, identityID, codeID).Scan(&email, &status, &used, &revoked); err != nil {
 		t.Fatalf("query activation/email-change outcome: %v", err)
 	}
-	if email != "changed@example.internal" {
-		t.Fatalf("concurrent identity email = %q, want changed@example.internal", email)
-	}
-	if activationErr == nil {
-		if status != "active" || !used || revoked {
-			t.Fatalf("activation-first outcome = status %q, used %t, revoked %t", status, used, revoked)
+	if errors.Is(emailErr, access.ErrInvalidEmailChange) {
+		if activationErr != nil {
+			t.Fatalf("email-change-first activation error = %v, want nil", activationErr)
+		}
+		if email != "race@example.internal" || status != "active" || !used || revoked {
+			t.Fatalf("email-change-first outcome = email %q, status %q, used %t, revoked %t", email, status, used, revoked)
 		}
 		return
 	}
-	if status != "pending" || used || !revoked {
-		t.Fatalf("email-change-first outcome = status %q, used %t, revoked %t", status, used, revoked)
+	if emailErr != nil {
+		t.Fatalf("unexpected email-change error = %v", emailErr)
+	}
+	if activationErr != nil {
+		t.Fatalf("activation-first activation error = %v, want nil", activationErr)
+	}
+	if email != "changed@example.internal" || status != "active" || !used || revoked {
+		t.Fatalf("activation-first outcome = email %q, status %q, used %t, revoked %t", email, status, used, revoked)
 	}
 }
 

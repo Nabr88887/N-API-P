@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"strings"
 
 	"n-api-p/internal/httpapi"
 )
@@ -19,19 +18,6 @@ type ModelListUpstream interface {
 
 type ModelListPolicy interface {
 	FilterModelIDs(context.Context, []string) ([]string, error)
-}
-
-type modelListEnvelope struct {
-	Object  string        `json:"object"`
-	Data    []modelRecord `json:"data"`
-	Success *bool         `json:"success,omitempty"`
-}
-
-type modelRecord struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created,omitempty"`
-	OwnedBy string `json:"owned_by"`
 }
 
 func NewModelListHandler(upstream ModelListUpstream, policy ModelListPolicy) (http.Handler, error) {
@@ -50,25 +36,14 @@ func NewModelListHandler(upstream ModelListUpstream, policy ModelListPolicy) (ht
 			writeChatError(writer, httpapi.CodeUpstreamError)
 			return
 		}
-		decoder := json.NewDecoder(strings.NewReader(string(body)))
-		decoder.DisallowUnknownFields()
-		var envelope modelListEnvelope
-		if err := decoder.Decode(&envelope); err != nil || envelope.Object != "list" || envelope.Success != nil && !*envelope.Success || len(envelope.Data) == 0 && !strings.Contains(string(body), `"data"`) {
-			writeChatError(writer, httpapi.CodeUpstreamError)
-			return
-		}
-		var trailing any
-		if err := decoder.Decode(&trailing); err != io.EOF {
+		envelope, err := DecodeModelListResponse(body)
+		if err != nil {
 			writeChatError(writer, httpapi.CodeUpstreamError)
 			return
 		}
 		ids := make([]string, 0, len(envelope.Data))
 		seen := make(map[string]struct{}, len(envelope.Data))
 		for _, model := range envelope.Data {
-			if model.ID == "" || model.ID != strings.TrimSpace(model.ID) || model.Object != "model" || model.OwnedBy == "" || model.OwnedBy != strings.TrimSpace(model.OwnedBy) {
-				writeChatError(writer, httpapi.CodeUpstreamError)
-				return
-			}
 			if _, exists := seen[model.ID]; exists {
 				writeChatError(writer, httpapi.CodeUpstreamError)
 				return
@@ -85,7 +60,7 @@ func NewModelListHandler(upstream ModelListUpstream, policy ModelListPolicy) (ht
 		for _, id := range allowed {
 			allowedSet[id] = struct{}{}
 		}
-		filtered := modelListEnvelope{Object: "list", Data: make([]modelRecord, 0, len(allowed))}
+		filtered := ModelListResponse{Object: "list", Data: make([]Model, 0, len(allowed))}
 		for _, model := range envelope.Data {
 			if _, ok := allowedSet[model.ID]; ok {
 				filtered.Data = append(filtered.Data, model)

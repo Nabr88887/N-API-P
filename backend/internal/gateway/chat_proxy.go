@@ -48,6 +48,7 @@ type ChatCaller struct {
 	ResponsibleIdentityID string
 	TeamID                string
 	TrafficOwner          TrafficOwner
+	Price                 *usage.PriceSnapshot
 }
 
 type chatCallerContextKey struct{}
@@ -65,33 +66,37 @@ func chatCallerFromContext(ctx context.Context) (ChatCaller, bool) {
 }
 
 type ChatProxyConfig struct {
-	Upstream      ChatUpstream
-	Capture       InitialCapture
-	Finalizer     ResponseFinalizer
-	Usage         usage.Repository
-	Policy        ModelPolicy
-	Limiter       Limiter
-	Now           func() time.Time
-	NewID         func() (string, error)
-	Retention     time.Duration
-	ResponseLimit int64
-	Metrics       *observability.Metrics
-	Rejections    RejectionRecorder
+	Upstream        ChatUpstream
+	Capture         InitialCapture
+	Finalizer       ResponseFinalizer
+	Usage           usage.Repository
+	Policy          ModelPolicy
+	Limiter         Limiter
+	Now             func() time.Time
+	NewID           func() (string, error)
+	Retention       time.Duration
+	RetentionReader func(context.Context) (time.Duration, error)
+	PriceReader     func(context.Context, string) (*usage.PriceSnapshot, error)
+	ResponseLimit   int64
+	Metrics         *observability.Metrics
+	Rejections      RejectionRecorder
 }
 
 type ChatProxyHandler struct {
-	upstream      ChatUpstream
-	capture       InitialCapture
-	finalizer     ResponseFinalizer
-	usage         usage.Repository
-	policy        ModelPolicy
-	limiter       Limiter
-	now           func() time.Time
-	newID         func() (string, error)
-	retention     time.Duration
-	responseLimit int64
-	metrics       *observability.Metrics
-	rejections    RejectionRecorder
+	upstream        ChatUpstream
+	capture         InitialCapture
+	finalizer       ResponseFinalizer
+	usage           usage.Repository
+	policy          ModelPolicy
+	limiter         Limiter
+	now             func() time.Time
+	newID           func() (string, error)
+	retention       time.Duration
+	retentionReader func(context.Context) (time.Duration, error)
+	priceReader     func(context.Context, string) (*usage.PriceSnapshot, error)
+	responseLimit   int64
+	metrics         *observability.Metrics
+	rejections      RejectionRecorder
 }
 
 func NewChatProxyHandler(config ChatProxyConfig) (*ChatProxyHandler, error) {
@@ -113,6 +118,10 @@ func NewChatProxyHandler(config ChatProxyConfig) (*ChatProxyHandler, error) {
 	if retention < 24*time.Hour || retention > 30*24*time.Hour || config.ResponseLimit < 0 {
 		return nil, ErrInvalidChatProxy
 	}
+	retentionReader := config.RetentionReader
+	if retentionReader == nil {
+		retentionReader = func(context.Context) (time.Duration, error) { return retention, nil }
+	}
 	responseLimit := config.ResponseLimit
 	if responseLimit == 0 {
 		responseLimit = DefaultLogicalResponseLimit
@@ -123,9 +132,20 @@ func NewChatProxyHandler(config ChatProxyConfig) (*ChatProxyHandler, error) {
 	return &ChatProxyHandler{
 		upstream: config.Upstream, capture: config.Capture, finalizer: config.Finalizer,
 		usage: config.Usage, policy: config.Policy, limiter: config.Limiter, now: now,
-		newID: newID, retention: retention, responseLimit: responseLimit,
+		newID: newID, retention: retention, retentionReader: retentionReader, priceReader: config.PriceReader, responseLimit: responseLimit,
 		metrics: config.Metrics, rejections: config.Rejections,
 	}, nil
+}
+
+func (handler *ChatProxyHandler) currentRetention(ctx context.Context) (time.Duration, error) {
+	if handler == nil || handler.retentionReader == nil {
+		return 0, ErrInvalidChatProxy
+	}
+	retention, err := handler.retentionReader(ctx)
+	if err != nil || retention < 24*time.Hour || retention > 30*24*time.Hour {
+		return 0, ErrInvalidChatProxy
+	}
+	return retention, nil
 }
 
 func (handler *ChatProxyHandler) SetMetrics(metrics *observability.Metrics) {
@@ -197,6 +217,17 @@ func (handler *ChatProxyHandler) ServeHTTP(writer http.ResponseWriter, request *
 		}
 		return
 	}
+	if handler.priceReader != nil {
+		price, priceErr := handler.priceReader(request.Context(), chatRequest.Model)
+		if priceErr != nil {
+			writeChatError(writer, httpapi.CodeInternalError)
+			return
+		}
+		if price != nil {
+			priceCopy := *price
+			caller.Price = &priceCopy
+		}
+	}
 	reservation, err := handler.limiter.Acquire(request.Context(), caller.TrafficOwner)
 	if err != nil {
 		var rateErr *RateLimitError
@@ -216,6 +247,11 @@ func (handler *ChatProxyHandler) ServeHTTP(writer http.ResponseWriter, request *
 	}
 
 	createdAt := handler.now().UTC()
+	retention, err := handler.currentRetention(request.Context())
+	if err != nil {
+		writeChatError(writer, httpapi.CodeAuditUnavailable)
+		return
+	}
 	auditID, err := handler.newID()
 	if err != nil {
 		writeChatError(writer, httpapi.CodeInternalError)
@@ -225,7 +261,7 @@ func (handler *ChatProxyHandler) ServeHTTP(writer http.ResponseWriter, request *
 		ID: auditID, RequestID: caller.RequestID, KeyID: caller.KeyID, OwnerKind: caller.OwnerKind,
 		IdentityID: caller.IdentityID, ServiceAccountID: caller.ServiceAccountID,
 		ResponsibleIdentityID: caller.ResponsibleIdentityID, TeamID: caller.TeamID, ModelID: chatRequest.Model,
-		ValidatedRequestJSON: body, CreatedAt: createdAt, ExpiresAt: createdAt.Add(handler.retention),
+		ValidatedRequestJSON: body, CreatedAt: createdAt, ExpiresAt: createdAt.Add(retention),
 	})
 	if err != nil {
 		writeChatError(writer, httpapi.CodeAuditUnavailable)
@@ -336,6 +372,11 @@ func (handler *ChatProxyHandler) serveStreaming(writer http.ResponseWriter, requ
 	streamContext, cancel := context.WithCancel(request.Context())
 	defer cancel()
 	createdAt := handler.now().UTC()
+	retention, err := handler.currentRetention(streamContext)
+	if err != nil {
+		writeChatError(writer, httpapi.CodeAuditUnavailable)
+		return
+	}
 	auditID, err := handler.newID()
 	if err != nil {
 		writeChatError(writer, httpapi.CodeInternalError)
@@ -344,7 +385,7 @@ func (handler *ChatProxyHandler) serveStreaming(writer http.ResponseWriter, requ
 	receipt, err := handler.capture.CaptureValidatedRequest(streamContext, audit.InitialCaptureInput{
 		ID: auditID, RequestID: caller.RequestID, KeyID: caller.KeyID, OwnerKind: caller.OwnerKind,
 		IdentityID: caller.IdentityID, ServiceAccountID: caller.ServiceAccountID, ResponsibleIdentityID: caller.ResponsibleIdentityID,
-		TeamID: caller.TeamID, ModelID: chatRequest.Model, ValidatedRequestJSON: body, CreatedAt: createdAt, ExpiresAt: createdAt.Add(handler.retention),
+		TeamID: caller.TeamID, ModelID: chatRequest.Model, ValidatedRequestJSON: body, CreatedAt: createdAt, ExpiresAt: createdAt.Add(retention),
 	})
 	if err != nil || receipt.AuditID != auditID || receipt.RequestID != caller.RequestID {
 		writeChatError(writer, httpapi.CodeAuditUnavailable)
@@ -377,13 +418,17 @@ func (handler *ChatProxyHandler) serveStreaming(writer http.ResponseWriter, requ
 				}
 			}
 		}
-		_ = handler.finalizeStreamFailure(caller, receipt, chatRequest.Model, createdAt, nil, 0, upstreamResponse, audit.AuditOutcomeLocalError, string(httpapi.CodeUpstreamError))
+		if finalErr := handler.finalizeStreamFailure(caller, receipt, chatRequest.Model, createdAt, nil, 0, upstreamResponse, audit.AuditOutcomeLocalError, string(httpapi.CodeUpstreamError)); finalErr != nil {
+			writeChatError(writer, httpapi.CodeAuditUnavailable)
+			return
+		}
 		writeChatError(writer, httpapi.CodeUpstreamError)
 		return
 	}
 	defer upstreamResponse.Body.Close()
 	writer.Header().Set("Content-Type", "text/event-stream")
 	writer.Header().Set("Cache-Control", "no-cache")
+	writer.Header().Add("Trailer", "X-N-API-P-Audit-Error")
 	setRequestIDHeader(writer, request, upstreamResponse.RequestID)
 	flusher, _ := writer.(http.Flusher)
 	started := false
@@ -409,17 +454,29 @@ func (handler *ChatProxyHandler) serveStreaming(writer http.ResponseWriter, requ
 		if errors.Is(parseErr, context.Canceled) || errors.Is(parseErr, io.ErrClosedPipe) {
 			outcome, code = audit.AuditOutcomeCancelled, "CLIENT_DISCONNECTED"
 		}
-		_ = handler.finalizeStream(caller, receipt, chatRequest.Model, createdAt, logicalBody, logical.ObservedBytes, upstreamResponse, status, outcome, code, logical.Usage, primaryFinishReason(logical))
+		finalErr := handler.finalizeStream(caller, receipt, chatRequest.Model, createdAt, logicalBody, logical.ObservedBytes, upstreamResponse, status, outcome, code, logical.Usage, primaryFinishReason(logical))
 		if !started {
+			if finalErr != nil {
+				writeChatError(writer, httpapi.CodeAuditUnavailable)
+				return
+			}
 			if errors.Is(parseErr, ErrSSETooLarge) {
 				writeChatError(writer, httpapi.CodeUpstreamResponseTooLarge)
 			} else {
 				writeChatError(writer, httpapi.CodeUpstreamError)
 			}
+		} else if finalErr != nil {
+			writer.Header().Set("X-N-API-P-Audit-Error", string(httpapi.CodeAuditUnavailable))
 		}
 		return
 	}
-	_ = handler.finalizeStream(caller, receipt, chatRequest.Model, createdAt, logicalBody, logical.ObservedBytes, upstreamResponse, audit.CaptureStatusComplete, audit.AuditOutcomeSuccess, "", logical.Usage, primaryFinishReason(logical))
+	if finalErr := handler.finalizeStream(caller, receipt, chatRequest.Model, createdAt, logicalBody, logical.ObservedBytes, upstreamResponse, audit.CaptureStatusComplete, audit.AuditOutcomeSuccess, "", logical.Usage, primaryFinishReason(logical)); finalErr != nil {
+		if started {
+			writer.Header().Set("X-N-API-P-Audit-Error", string(httpapi.CodeAuditUnavailable))
+			return
+		}
+		writeChatError(writer, httpapi.CodeAuditUnavailable)
+	}
 }
 
 func (handler *ChatProxyHandler) finalizeStreamFailure(caller ChatCaller, receipt audit.CaptureReceipt, model string, createdAt time.Time, body []byte, observed int64, response *NewAPIResponse, outcome audit.AuditOutcome, code string) error {
@@ -519,12 +576,16 @@ func (handler *ChatProxyHandler) finalizerAndUsageWithFinish(ctx context.Context
 	case audit.AuditOutcomeCancelled:
 		usageOutcome = usage.OutcomeCancelled
 	}
+	price := caller.Price
+	if tokenUsage == nil {
+		price = nil
+	}
 	record, err := usage.NewRecord(usage.RecordInput{
 		ID: usageID, AuditID: receipt.AuditID, RequestID: receipt.RequestID, KeyID: caller.KeyID,
 		OwnerKind: usage.OwnerKind(caller.OwnerKind), IdentityID: caller.IdentityID,
 		ServiceAccountID: caller.ServiceAccountID, ResponsibleIdentityID: caller.ResponsibleIdentityID,
 		TeamID: caller.TeamID, ModelID: model, UpstreamRequestID: upstreamRequestID, Outcome: usageOutcome,
-		Usage: tokenUsage, CreatedAt: createdAt,
+		Usage: tokenUsage, Price: price, CreatedAt: createdAt,
 	})
 	if err != nil {
 		handler.observeUsagePersistence("failure")

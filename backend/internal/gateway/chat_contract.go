@@ -394,15 +394,16 @@ type Model struct {
 
 func DecodeModelListResponse(data []byte) (ModelListResponse, error) {
 	var wire struct {
-		Object string `json:"object"`
-		Data   []struct {
+		Object  string `json:"object"`
+		Success *bool  `json:"success,omitempty"`
+		Data    []struct {
 			ID      string `json:"id"`
 			Object  string `json:"object"`
 			Created *int64 `json:"created"`
 			OwnedBy string `json:"owned_by"`
 		} `json:"data"`
 	}
-	if err := decodeJSON(data, &wire, false); err != nil || wire.Object != "list" || wire.Data == nil {
+	if err := decodeJSON(data, &wire, true); err != nil || wire.Object != "list" || wire.Data == nil || wire.Success != nil && !*wire.Success {
 		return ModelListResponse{}, ErrInvalidModelListResponse
 	}
 

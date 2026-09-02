@@ -69,6 +69,19 @@ WHERE ($1::uuid IS NULL OR sa.team_id = $1)
 ORDER BY sa.created_at DESC, sa.id DESC
 LIMIT $5`
 
+const listAdministrationSecurityEventsSQL = `
+SELECT id::text, event_type, actor_identity_id::text, target_identity_id::text,
+       target_service_account_id::text, target_key_id::text, target_audit_id::text,
+       request_id::text, outcome, reason, detail_code, occurred_at
+FROM security_events
+WHERE ($1::text IS NULL OR event_type = $1)
+  AND ($2::text IS NULL OR outcome = $2)
+  AND ($3::timestamptz IS NULL OR occurred_at >= $3)
+  AND ($4::timestamptz IS NULL OR occurred_at <= $4)
+  AND ($5::timestamptz IS NULL OR (occurred_at, id) < ($5, $6::uuid))
+ORDER BY occurred_at DESC, id DESC
+LIMIT $7`
+
 const lockAdministrationTargetIdentitySQL = `
 SELECT id::text
 FROM identities
@@ -378,6 +391,93 @@ func (r *Repository) ListAdministrationServiceAccounts(ctx context.Context, filt
 	}
 	if err := tx.Commit(); err != nil {
 		return access.AdministrationServiceAccountPage{}, fmt.Errorf("commit administration service account list transaction: %w", err)
+	}
+	committed = true
+	return page, nil
+}
+
+func (r *Repository) ListAdministrationSecurityEvents(ctx context.Context, filter access.AdministrationSecurityEventFilter) (page access.AdministrationSecurityEventPage, err error) {
+	cursor, err := decodeAdministrationCursor(filter.Cursor)
+	if err != nil || r == nil || r.db == nil {
+		return access.AdministrationSecurityEventPage{}, access.ErrInvalidAdministrationRequest
+	}
+	var cursorTime, cursorID any
+	if cursor != nil {
+		cursorTime, cursorID = cursor.CreatedAt.UTC(), cursor.ID
+	}
+	var from, to any
+	if filter.From != nil {
+		from = filter.From.UTC()
+	}
+	if filter.To != nil {
+		to = filter.To.UTC()
+	}
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return access.AdministrationSecurityEventPage{}, fmt.Errorf("begin security event list transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+				err = errors.Join(err, rollbackErr)
+			}
+		}
+	}()
+	if err := requireActiveSystemAdministratorReadOnly(ctx, tx, filter.ActorIdentityID); err != nil {
+		return access.AdministrationSecurityEventPage{}, err
+	}
+	var eventType, outcome any
+	if filter.EventType != nil {
+		eventType = strings.TrimSpace(*filter.EventType)
+	}
+	if filter.Outcome != nil {
+		outcome = string(*filter.Outcome)
+	}
+	rows, err := tx.QueryContext(ctx, listAdministrationSecurityEventsSQL, eventType, outcome, from, to, cursorTime, cursorID, filter.Limit+1)
+	if err != nil {
+		return access.AdministrationSecurityEventPage{}, fmt.Errorf("query security events: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var event access.AdministrationSecurityEvent
+		var actorID, targetID, serviceID, keyID, auditID, reason, detail sql.NullString
+		if err := rows.Scan(&event.ID, &event.EventType, &actorID, &targetID, &serviceID, &keyID, &auditID, &event.RequestID, &event.Outcome, &reason, &detail, &event.OccurredAt); err != nil {
+			return access.AdministrationSecurityEventPage{}, fmt.Errorf("scan security event: %w", err)
+		}
+		if actorID.Valid {
+			event.ActorIdentityID = actorID.String
+		}
+		if targetID.Valid {
+			event.TargetIdentityID = targetID.String
+		}
+		if serviceID.Valid {
+			event.TargetServiceAccountID = serviceID.String
+		}
+		if keyID.Valid {
+			event.TargetKeyID = keyID.String
+		}
+		if auditID.Valid {
+			event.TargetAuditID = auditID.String
+		}
+		if reason.Valid {
+			event.Reason = reason.String
+		}
+		if detail.Valid {
+			event.DetailCode = detail.String
+		}
+		page.Events = append(page.Events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return access.AdministrationSecurityEventPage{}, fmt.Errorf("iterate security events: %w", err)
+	}
+	if len(page.Events) > filter.Limit {
+		last := page.Events[filter.Limit-1]
+		page.Events = page.Events[:filter.Limit]
+		page.NextCursor = encodeAdministrationCursor(administrationCursor{CreatedAt: last.OccurredAt, ID: last.ID})
+	}
+	if err := tx.Commit(); err != nil {
+		return access.AdministrationSecurityEventPage{}, fmt.Errorf("commit security event list transaction: %w", err)
 	}
 	committed = true
 	return page, nil

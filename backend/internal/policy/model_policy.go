@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"unicode"
+
+	"n-api-p/internal/usage"
 )
 
 var (
@@ -15,6 +17,10 @@ var (
 
 type ModelAllowlistReader interface {
 	ListAllowedModelIDs(context.Context) ([]string, error)
+}
+
+type modelPriceReader interface {
+	ReadModelPrice(context.Context, string) (*usage.PriceSnapshot, error)
 }
 
 type Resolver struct {
@@ -85,6 +91,24 @@ func (resolver *Resolver) FilterModelIDs(ctx context.Context, upstream []string)
 		filtered = append(filtered, modelID)
 	}
 	return filtered, nil
+}
+
+// Price returns the active price snapshot for an allowed model when the backing
+// reader exposes pricing. Models without configured prices intentionally return
+// nil so usage metering remains valid without inventing a cost.
+func (resolver *Resolver) Price(ctx context.Context, modelID string) (*usage.PriceSnapshot, error) {
+	if resolver == nil || resolver.reader == nil {
+		return nil, ErrPolicyUnavailable
+	}
+	modelID, err := normalizeModelID(modelID)
+	if err != nil {
+		return nil, err
+	}
+	reader, ok := resolver.reader.(modelPriceReader)
+	if !ok {
+		return nil, nil
+	}
+	return reader.ReadModelPrice(ctx, modelID)
 }
 
 func normalizeModelID(modelID string) (string, error) {

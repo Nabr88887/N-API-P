@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"n-api-p/internal/access"
 	"n-api-p/internal/observability"
@@ -105,7 +106,7 @@ type AdminServiceAccountLister interface {
 }
 
 type AdminServiceAccountKeyLister interface {
-	ListKeys(context.Context, access.ListServiceAccountKeysInput) ([]access.ServiceAccountKey, error)
+	ListKeysPage(context.Context, access.ListServiceAccountKeysInput, string, int) (access.ServiceAccountKeyPage, error)
 }
 
 type AdminServiceKeyRotator interface {
@@ -118,6 +119,14 @@ type AdminModelPolicyReader interface {
 
 type AdminRetentionPolicyReader interface {
 	Get(context.Context, access.ActivePortalSession) (access.RetentionPolicy, error)
+}
+
+type AdminIdentityService interface {
+	ChangeEmail(context.Context, access.ChangeEmailInput) error
+}
+
+type AdminSecurityEventLister interface {
+	ListSecurityEvents(context.Context, access.Actor, access.AdministrationSecurityEventFilter) (access.AdministrationSecurityEventPage, error)
 }
 
 type AdminPortalDependencies struct {
@@ -135,9 +144,68 @@ type AdminPortalDependencies struct {
 	Operations       AdminOperationsService
 	Offboarding      AdminOffboardingService
 	ServiceAccount   AdminServiceAccountService
+	Identity         AdminIdentityService
+	SecurityEvents   AdminSecurityEventLister
 }
 
 var ErrAdminPortalDependencies = errors.New("admin portal services are required")
+
+func NewAdminSecurityEventListHandler(service AdminSecurityEventLister) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		session, ok := requireSystemAdministrator(writer, request)
+		if !ok {
+			return
+		}
+		limit, err := parsePageLimit(request)
+		if err != nil {
+			writeErrorResponse(writer, CodeInvalidRequest)
+			return
+		}
+		filter := access.AdministrationSecurityEventFilter{Limit: limit, Cursor: request.URL.Query().Get("cursor")}
+		if raw := strings.TrimSpace(request.URL.Query().Get("event_type")); raw != "" {
+			filter.EventType = &raw
+		}
+		if raw := strings.TrimSpace(request.URL.Query().Get("outcome")); raw != "" {
+			value := access.SecurityEventOutcome(raw)
+			filter.Outcome = &value
+		}
+		if filter.From, err = parseOptionalAdminTime(request.URL.Query().Get("from")); err != nil {
+			writeErrorResponse(writer, CodeInvalidRequest)
+			return
+		}
+		if filter.To, err = parseOptionalAdminTime(request.URL.Query().Get("to")); err != nil {
+			writeErrorResponse(writer, CodeInvalidRequest)
+			return
+		}
+		if filter.From != nil && filter.To != nil && filter.From.After(*filter.To) {
+			writeErrorResponse(writer, CodeInvalidRequest)
+			return
+		}
+		page, err := service.ListSecurityEvents(request.Context(), adminActor(session), filter)
+		if err != nil {
+			writeAdminError(writer, err)
+			return
+		}
+		data := make([]SecurityEventMetadata, 0, len(page.Events))
+		for _, event := range page.Events {
+			data = append(data, SecurityEventMetadata{ID: event.ID, EventType: event.EventType, ActorAccountID: event.ActorIdentityID, TargetAccountID: event.TargetIdentityID, TargetServiceAccountID: event.TargetServiceAccountID, TargetKeyID: event.TargetKeyID, TargetAuditID: event.TargetAuditID, RequestID: event.RequestID, Outcome: SecurityEventOutcome(event.Outcome), Reason: event.Reason, DetailCode: event.DetailCode, OccurredAt: event.OccurredAt})
+		}
+		writePagedJSON(writer, http.StatusOK, PagedResponse[SecurityEventMetadata]{Data: data, Pagination: Pagination{NextCursor: page.NextCursor, HasMore: page.NextCursor != ""}})
+	})
+}
+
+func parseOptionalAdminTime(value string) (*time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return nil, ErrInvalidPageRequest
+	}
+	parsed = parsed.UTC()
+	return &parsed, nil
+}
 
 func NewAdminPasswordResetCodeHandler(service PasswordResetCodeIssuer) http.Handler {
 	return NewPasswordResetCodeHandler(service)
@@ -422,7 +490,7 @@ func NewAdminAccountUpdateHandler(administration interface {
 	ChangeRole(context.Context, access.ChangeRoleInput) error
 }, offboarding interface {
 	DisableEmployee(context.Context, access.DisableEmployeeInput) error
-}) http.Handler {
+}, identities ...AdminIdentityService) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		session, ok := requireSystemAdministrator(writer, request)
 		if !ok {
@@ -439,7 +507,7 @@ func NewAdminAccountUpdateHandler(administration interface {
 				changeCount++
 			}
 		}
-		if identityID == "" || changeCount != 1 || input.Email != nil {
+		if identityID == "" || changeCount != 1 {
 			writeErrorResponse(writer, CodeInvalidRequest)
 			return
 		}
@@ -453,6 +521,16 @@ func NewAdminAccountUpdateHandler(administration interface {
 		}
 		if input.Role != nil {
 			if err := administration.ChangeRole(request.Context(), access.ChangeRoleInput{Actor: adminActor(session), IdentityID: identityID, Role: access.Role(*input.Role), RequestID: adminRequestID(request)}); err != nil {
+				writeAdminError(writer, err)
+				return
+			}
+		}
+		if input.Email != nil {
+			if len(identities) != 1 || identities[0] == nil || strings.TrimSpace(*input.Email) == "" {
+				writeErrorResponse(writer, CodeInvalidRequest)
+				return
+			}
+			if err := identities[0].ChangeEmail(request.Context(), access.ChangeEmailInput{Actor: adminActor(session), IdentityID: identityID, Email: *input.Email, RequestID: adminRequestID(request)}); err != nil {
 				writeAdminError(writer, err)
 				return
 			}
@@ -659,16 +737,21 @@ func NewAdminServiceKeyListHandler(service AdminServiceAccountKeyLister) http.Ha
 			writeErrorResponse(writer, CodeNotFound)
 			return
 		}
-		keys, err := service.ListKeys(request.Context(), access.ListServiceAccountKeysInput{Actor: adminActor(session), ServiceAccountID: id})
+		limit, err := parsePageLimit(request)
+		if err != nil {
+			writeErrorResponse(writer, CodeInvalidRequest)
+			return
+		}
+		page, err := service.ListKeysPage(request.Context(), access.ListServiceAccountKeysInput{Actor: adminActor(session), ServiceAccountID: id}, request.URL.Query().Get("cursor"), limit)
 		if err != nil {
 			writeAdminError(writer, err)
 			return
 		}
-		data := make([]Key, 0, len(keys))
-		for _, key := range keys {
+		data := make([]Key, 0, len(page.Keys))
+		for _, key := range page.Keys {
 			data = append(data, serviceKeyResponse(key))
 		}
-		writePagedJSON(writer, http.StatusOK, PagedResponse[Key]{Data: data, Pagination: Pagination{HasMore: false}})
+		writePagedJSON(writer, http.StatusOK, PagedResponse[Key]{Data: data, Pagination: Pagination{NextCursor: page.NextCursor, HasMore: page.NextCursor != ""}})
 	})
 }
 
@@ -738,7 +821,7 @@ func NewAdminRetentionPolicyGetHandler(service AdminRetentionPolicyReader) http.
 }
 
 func NewAdminPortalRouter(deps AdminPortalDependencies) (http.Handler, error) {
-	if deps.Sessions == nil || deps.Invitations == nil || deps.PasswordResets == nil || deps.ServiceKeys == nil || deps.ServiceKeyRevoke == nil || deps.Models == nil || deps.Retention == nil || deps.Administration == nil || deps.Audits == nil || deps.RawView == nil || deps.Operations == nil || deps.Offboarding == nil || deps.ServiceAccount == nil {
+	if deps.Sessions == nil || deps.Invitations == nil || deps.PasswordResets == nil || deps.ServiceKeys == nil || deps.ServiceKeyRevoke == nil || deps.Models == nil || deps.Retention == nil || deps.Administration == nil || deps.Audits == nil || deps.RawView == nil || deps.Operations == nil || deps.Offboarding == nil || deps.ServiceAccount == nil || deps.Identity == nil || deps.SecurityEvents == nil {
 		return nil, ErrAdminPortalDependencies
 	}
 	middleware, err := NewPortalSessionMiddleware(deps.Sessions, deps.AllowedOrigin)
@@ -770,7 +853,7 @@ func NewAdminPortalRouter(deps AdminPortalDependencies) (http.Handler, error) {
 	if err := registerAdminRoute("admin.users.get", http.MethodGet, "/api/v1/users/{userID}", NewAdminAccountGetHandler(deps.Administration)); err != nil {
 		return nil, err
 	}
-	if err := registerAdminRoute("admin.users.update", http.MethodPatch, "/api/v1/users/{userID}", NewAdminAccountUpdateHandler(deps.Administration, deps.Offboarding)); err != nil {
+	if err := registerAdminRoute("admin.users.update", http.MethodPatch, "/api/v1/users/{userID}", NewAdminAccountUpdateHandler(deps.Administration, deps.Offboarding, deps.Identity)); err != nil {
 		return nil, err
 	}
 	if err := registerAdminRoute("admin.teams.list", http.MethodGet, "/api/v1/teams", NewAdminTeamListHandler(deps.Administration)); err != nil {
@@ -840,6 +923,9 @@ func NewAdminPortalRouter(deps AdminPortalDependencies) (http.Handler, error) {
 		return nil, err
 	}
 	if err := registerAdminRoute("admin.audits.view_raw", http.MethodPost, "/api/v1/audits/{auditID}/raw-views", NewRawViewHandler(deps.RawView)); err != nil {
+		return nil, err
+	}
+	if err := registerAdminRoute("admin.security_events.list", http.MethodGet, "/api/v1/security-events", NewAdminSecurityEventListHandler(deps.SecurityEvents)); err != nil {
 		return nil, err
 	}
 	if err := registerAdminRoute("admin.operations.health", http.MethodGet, "/api/v1/operations/health", NewAdminOperationsHealthHandler(deps.Operations)); err != nil {
@@ -1078,6 +1164,7 @@ func writeAdminError(writer http.ResponseWriter, err error) {
 	case errors.Is(err, access.ErrReauthenticationRequired):
 		writeErrorResponse(writer, CodeReauthenticationRequired)
 	case errors.Is(err, access.ErrInvalidInvitation),
+		errors.Is(err, access.ErrInvalidEmailChange),
 		errors.Is(err, access.ErrManualIdentityVerificationRequired),
 		errors.Is(err, access.ErrInvalidServiceAccount),
 		errors.Is(err, access.ErrInvalidServiceAccountKey),

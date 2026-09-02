@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -53,6 +54,21 @@ func TestModelListHandlerRejectsInvalidUpstreamData(t *testing.T) {
 	}
 }
 
+func TestModelListHandlerMapsPolicyFailureToInternalError(t *testing.T) {
+	handler, err := NewModelListHandler(&fakeModelUpstream{response: &NewAPIResponse{
+		StatusCode: http.StatusOK, ContentType: "application/json",
+		Body: io.NopCloser(strings.NewReader(`{"object":"list","data":[]}`)),
+	}}, &fakeModelFilter{err: errors.New("policy store unavailable")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	if recorder.Code != http.StatusInternalServerError || !strings.Contains(recorder.Body.String(), `"code":"INTERNAL_ERROR"`) {
+		t.Fatalf("response = %d/%s, want internal error", recorder.Code, recorder.Body.String())
+	}
+}
+
 type fakeModelUpstream struct {
 	response *NewAPIResponse
 	err      error
@@ -62,9 +78,15 @@ func (fake *fakeModelUpstream) ListModels(context.Context) (*NewAPIResponse, err
 	return fake.response, fake.err
 }
 
-type fakeModelFilter struct{ allowed []string }
+type fakeModelFilter struct {
+	allowed []string
+	err     error
+}
 
 func (fake *fakeModelFilter) FilterModelIDs(_ context.Context, upstream []string) ([]string, error) {
+	if fake.err != nil {
+		return nil, fake.err
+	}
 	allowed := make(map[string]struct{}, len(fake.allowed))
 	for _, value := range fake.allowed {
 		allowed[value] = struct{}{}

@@ -143,6 +143,11 @@ func (repository *administrationRepositoryFake) ListAdministrationServiceAccount
 	return AdministrationServiceAccountPage{}, nil
 }
 
+func (repository *administrationRepositoryFake) ListAdministrationSecurityEvents(context.Context, AdministrationSecurityEventFilter) (AdministrationSecurityEventPage, error) {
+	repository.calls++
+	return AdministrationSecurityEventPage{}, nil
+}
+
 func (repository *administrationRepositoryFake) GetAdministrationAccount(_ context.Context, actorIdentityID, _ string) (AdministrationAccount, error) {
 	repository.calls++
 	repository.resourceActor = actorIdentityID

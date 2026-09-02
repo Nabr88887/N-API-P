@@ -26,6 +26,8 @@ export type RawAuditView = { audit_id: string; request: unknown; response: unkno
 export type HealthComponent = { name: string; state: HealthState; detail_code?: string; checked_at: string }
 export type HealthResponse = { state: HealthState; components: HealthComponent[]; checked_at: string }
 export type OperationalEvent = { id: string; event_type: string; severity: string; detail_code?: string; occurred_at: string }
+export type SecurityEventOutcome = 'success' | 'denied' | 'failure'
+export type SecurityEventMetadata = { id: string; event_type: string; actor_account_id?: string; target_account_id?: string; target_service_account_id?: string; target_key_id?: string; target_audit_id?: string; request_id: string; outcome: SecurityEventOutcome; occurred_at: string }
 
 export class AdminAPIError extends Error {
   constructor(public readonly code: string) { super(code) }
@@ -36,13 +38,13 @@ export interface AdminPortalClient {
   listTeams(query?: { cursor?: string; status?: TeamStatus }): Promise<PagedResponse<Team>>
   disableTeam(teamID: string): Promise<void>
   invite(email: string, teamID: string): Promise<InvitationIssuance>
-  updateAccount(accountID: string, input: { role?: Role; status?: AccountStatus; confirmed?: boolean }): Promise<void>
+  updateAccount(accountID: string, input: { email?: string; role?: Role; status?: AccountStatus; confirmed?: boolean }): Promise<void>
   addMember(teamID: string, accountID: string): Promise<void>
   removeMember(teamID: string, accountID: string): Promise<void>
   listServiceAccounts(query?: { cursor?: string; team_id?: string; status?: ServiceAccountStatus }): Promise<PagedResponse<ServiceAccount>>
   createServiceAccount(teamID: string, responsibleAccountID: string, name: string): Promise<ServiceAccount>
   disableServiceAccount(serviceAccountID: string): Promise<void>
-  listServiceKeys(serviceAccountID: string): Promise<PagedResponse<Key>>
+  listServiceKeys(serviceAccountID: string, query?: { cursor?: string }): Promise<PagedResponse<Key>>
   createServiceKey(serviceAccountID: string, name: string): Promise<KeyIssuance>
   rotateServiceKey(serviceAccountID: string, keyID: string, name: string): Promise<KeyIssuance>
   revokeServiceKey(serviceAccountID: string, keyID: string): Promise<void>
@@ -55,6 +57,7 @@ export interface AdminPortalClient {
   inspectAudit(auditID: string, reason: string): Promise<RawAuditView>
   getOperationsHealth(): Promise<HealthResponse>
   listOperationalEvents(query?: { cursor?: string }): Promise<PagedResponse<OperationalEvent>>
+  listSecurityEvents(query?: { cursor?: string }): Promise<PagedResponse<SecurityEventMetadata>>
   reauthenticate(password: string): Promise<void>
 }
 
@@ -90,7 +93,7 @@ export function createAdminPortalClient(): AdminPortalClient {
     listServiceAccounts: (query = {}) => request(pagePath('/api/v1/service-accounts', query)),
     createServiceAccount: (teamID, responsibleAccountID, name) => request('/api/v1/service-accounts', { method: 'POST', body: JSON.stringify({ team_id: teamID, responsible_account_id: responsibleAccountID, name }) }),
     disableServiceAccount: (id) => request(`/api/v1/service-accounts/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ status: 'disabled', confirmed: true }) }),
-    listServiceKeys: (id) => request(pagePath(`/api/v1/service-accounts/${encodeURIComponent(id)}/keys`)),
+    listServiceKeys: (id, query = {}) => request(pagePath(`/api/v1/service-accounts/${encodeURIComponent(id)}/keys`, query)),
     createServiceKey: (id, name) => request(`/api/v1/service-accounts/${encodeURIComponent(id)}/keys`, { method: 'POST', body: JSON.stringify({ name }) }),
     rotateServiceKey: (id, keyID, name) => request(`/api/v1/service-accounts/${encodeURIComponent(id)}/keys/${encodeURIComponent(keyID)}/rotations`, { method: 'POST', body: JSON.stringify({ name, confirmed: true }) }),
     revokeServiceKey: (id, keyID) => request(`/api/v1/service-accounts/${encodeURIComponent(id)}/keys/${encodeURIComponent(keyID)}`, { method: 'DELETE', body: JSON.stringify({ confirmed: true }) }),
@@ -103,6 +106,7 @@ export function createAdminPortalClient(): AdminPortalClient {
     inspectAudit: (id, reason) => request(`/api/v1/audits/${encodeURIComponent(id)}/raw-views`, { method: 'POST', body: JSON.stringify({ reason }) }),
     getOperationsHealth: () => request('/api/v1/operations/health'),
     listOperationalEvents: (query = {}) => request(pagePath('/api/v1/operations/events', query)),
+    listSecurityEvents: (query = {}) => request(pagePath('/api/v1/security-events', query)),
     reauthenticate: (password) => request('/api/v1/sessions/current/reauthentications', { method: 'POST', body: JSON.stringify({ password }) }),
   }
 }

@@ -153,7 +153,8 @@ func New(cfg config.Config, secrets *config.Secrets) (*Application, error) {
 	}
 	chat, err := gateway.NewChatProxyHandler(gateway.ChatProxyConfig{
 		Upstream: upstream, Capture: capture, Finalizer: finalizer, Usage: repository,
-		Policy: policyResolver, Limiter: limiter, Retention: timeDuration(cfg.RawRetentionDefaultDays),
+		Policy: policyResolver, Limiter: limiter, Retention: timeDuration(cfg.RawRetentionDefaultDays), RetentionReader: retention.CurrentRetention,
+		PriceReader:   policyResolver.Price,
 		ResponseLimit: 4 << 20, Metrics: metrics, Rejections: rejections,
 	})
 	if err != nil {
@@ -183,16 +184,29 @@ func New(cfg config.Config, secrets *config.Secrets) (*Application, error) {
 			PasswordResets: passwordReset, ServiceKeys: serviceAccounts, ServiceKeyRevoke: serviceAccounts,
 			Models: modelAllowlist, Retention: retention, Administration: administration,
 			Audits: metadata, RawView: rawView, Operations: operationsService,
-			Offboarding: offboarding, ServiceAccount: serviceAccounts,
+			Offboarding: offboarding, ServiceAccount: serviceAccounts, Identity: access.NewIdentityService(repository),
+			SecurityEvents: administration,
 		},
 	})
 	if err != nil {
 		return closeOnError(err)
 	}
 	operatorHealth, err := httpapi.NewOperatorHealthRouter(httpapi.OperatorHealthDependencies{
-		Authorize: trustedOperatorRequest, Configuration: func(context.Context) error { return nil },
-		Database:       func(ctx context.Context) error { return db.PingContext(ctx) },
-		ActiveAuditKey: func(context.Context) error { return nil }, ReadAuditGate: repository.ReadAuditGate,
+		Authorize: trustedOperatorRequest, Configuration: func(context.Context) error {
+			if strings.TrimSpace(cfg.DatabaseURL) == "" || strings.TrimSpace(cfg.PortalOrigin) == "" || cfg.NewAPIBaseURL == nil || len(secrets.NewAPIToken()) == 0 {
+				return ErrInvalidApplication
+			}
+			return nil
+		},
+		Database: func(ctx context.Context) error { return db.PingContext(ctx) },
+		ActiveAuditKey: func(context.Context) error {
+			version, keys := secrets.AuditKeyring()
+			key, ok := keys[version]
+			if !ok || len(key) != 32 {
+				return ErrInvalidApplication
+			}
+			return nil
+		}, ReadAuditGate: repository.ReadAuditGate,
 		ObserveDeletionLag: repository.ObserveDeletionLag,
 	})
 	if err != nil {

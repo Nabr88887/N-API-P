@@ -10,9 +10,9 @@ import {
   LayoutDashboard,
   Menu,
   PanelLeftClose,
-  Search,
   ServerCog,
   Settings2,
+  ShieldAlert,
   ShieldCheck,
   UsersRound,
   X,
@@ -25,9 +25,11 @@ import { createTeamPortalClient, type TeamPortalClient } from './team-api'
 import { createAdminPortalClient, type AdminPortalClient, type HealthResponse } from './admin-api'
 import { SystemAdminWorkspace } from './SystemAdminWorkspace'
 import { CriticalFaultBanners } from './OperationsWorkspace'
+import { SecurityEventsWorkspace } from './SecurityEventsWorkspace'
 import { activeCriticalFaults } from './operational-faults'
 import { ModalDialog } from './ModalDialog'
 import { trapTabKey } from './focus-management'
+import { advanceCursor } from './pagination'
 
 import './app.css'
 
@@ -77,34 +79,21 @@ const roleProfiles: Record<Role, RoleProfile> = {
       { label: 'Model policy', icon: Boxes },
       { label: 'Retention', icon: FileClock },
       { label: 'Audit', icon: FileClock },
+      { label: 'Security events', icon: ShieldAlert },
       { label: 'Operations', icon: Settings2 },
     ],
   },
 }
 
-const activityRows = [
-  { time: '09:42', actor: 'Mira Chen', action: 'Viewed usage summary', result: 'Allowed' },
-  { time: '09:18', actor: 'Gateway', action: 'Model policy check', result: 'Passed' },
-  { time: '08:57', actor: 'Jon Bell', action: 'Key used for chat request', result: 'Captured' },
-  { time: 'Yesterday', actor: 'Mira Chen', action: 'Session renewed', result: 'Allowed' },
-]
-
-const metricCards = [
-  { value: '1,248', label: 'Requests today', detail: '+8.4% from yesterday', tone: 'green' },
-  { value: '100%', label: 'Audit capture', detail: 'No persistence faults', tone: 'blue' },
-  { value: '12', label: 'Models available', detail: 'Global allowlist', tone: 'amber' },
-]
-
 function roleName(role: Role): string {
   return roleProfiles[role].label
 }
 
-export function App({ role = 'system_administrator', employeeClient: injectedEmployeeClient, teamClient: injectedTeamClient, adminClient: injectedAdminClient, teamID = '', identityEmail = '' }: { role?: Role; employeeClient?: EmployeePortalClient; teamClient?: TeamPortalClient; adminClient?: AdminPortalClient; teamID?: string; identityEmail?: string }) {
+export function App({ role = 'system_administrator', employeeClient: injectedEmployeeClient, teamClient: injectedTeamClient, adminClient: injectedAdminClient, teamID = '', teamIDs, identityEmail = '', onLogout }: { role?: Role; employeeClient?: EmployeePortalClient; teamClient?: TeamPortalClient; adminClient?: AdminPortalClient; teamID?: string; teamIDs?: string[]; identityEmail?: string; onLogout?: () => Promise<void> }) {
   const profile = roleProfiles[role]
   const [activeSection, setActiveSection] = useState('Overview')
   const [navigationOpen, setNavigationOpen] = useState(false)
   const [sessionDialogOpen, setSessionDialogOpen] = useState(false)
-  const [searchTerm, setSearchTerm] = useState('')
   const [employeeClient] = useState(() => injectedEmployeeClient ?? createEmployeePortalClient())
   const [teamClient] = useState(() => injectedTeamClient ?? createTeamPortalClient())
   const [adminClient] = useState(() => injectedAdminClient ?? createAdminPortalClient())
@@ -115,10 +104,17 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
   const [usageCursor, setUsageCursor] = useState<string | undefined>()
   const [employeeLoading, setEmployeeLoading] = useState(false)
   const [employeeError, setEmployeeError] = useState('')
+  const [employeeSubmitting, setEmployeeSubmitting] = useState(false)
+  const [employeePageLoading, setEmployeePageLoading] = useState(false)
+  const [employeePageError, setEmployeePageError] = useState('')
+  const personalKeyCursors = useRef(new Set<string>())
+  const usageCursors = useRef(new Set<string>())
   const [createKeyOpen, setCreateKeyOpen] = useState(false)
   const [createKeyName, setCreateKeyName] = useState('')
   const [issuedKey, setIssuedKey] = useState<KeyIssuance | null>(null)
   const [revokeKey, setRevokeKey] = useState<PersonalKey | null>(null)
+  const [logoutPending, setLogoutPending] = useState(false)
+  const [logoutError, setLogoutError] = useState('')
   const navigationRef = useRef<HTMLElement>(null)
   const navigationTriggerRef = useRef<HTMLButtonElement>(null)
   const navigationCloseRef = useRef<HTMLButtonElement>(null)
@@ -126,11 +122,6 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
   const criticalFaults = activeCriticalFaults(operationsHealth)
   const auditUnavailable = criticalFaults.includes('audit_unavailable')
   const operationsHealthPending = role === 'system_administrator' && operationsHealth === null
-
-  const visibleActivity = activityRows.filter((row) => {
-    const searchable = `${row.actor} ${row.action} ${row.result}`.toLowerCase()
-    return searchable.includes(searchTerm.trim().toLowerCase())
-  })
 
   function selectSection(label: string) {
     if (role === 'employee' && label !== 'Overview') {
@@ -163,10 +154,6 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
     if (navigationRef.current) trapTabKey(event, navigationRef.current)
   }
 
-  function handleSearch(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-  }
-
   useEffect(() => {
     if (role !== 'system_administrator') return
     let cancelled = false
@@ -196,17 +183,20 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
   useEffect(() => {
     if (role !== 'employee' || activeSection === 'Overview') return
     let cancelled = false
+    const seenCursors = new Set<string>()
+    if (activeSection === 'My keys') personalKeyCursors.current = seenCursors
+    else usageCursors.current = seenCursors
     const load = activeSection === 'My keys'
       ? employeeClient.listPersonalKeys().then((response) => {
         if (!cancelled) {
           setPersonalKeys(response.data)
-          setPersonalKeyCursor(response.pagination.next_cursor)
+          setPersonalKeyCursor(advanceCursor(response.pagination, seenCursors))
         }
       })
       : employeeClient.listUsage().then((response) => {
         if (!cancelled) {
           setUsageRecords(response.data)
-          setUsageCursor(response.pagination.next_cursor)
+          setUsageCursor(advanceCursor(response.pagination, seenCursors))
         }
       })
     load.catch(() => {
@@ -219,8 +209,9 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
 
   async function submitCreateKey(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!createKeyName.trim()) return
+    if (!createKeyName.trim() || employeeSubmitting) return
     setEmployeeError('')
+    setEmployeeSubmitting(true)
     try {
       const issuance = await employeeClient.createPersonalKey(createKeyName.trim())
       setIssuedKey(issuance)
@@ -229,32 +220,57 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
       setPersonalKeys((current) => [issuance.key, ...current])
     } catch {
       setEmployeeError('Unable to create this key.')
+    } finally {
+      setEmployeeSubmitting(false)
     }
   }
 
   async function confirmRevokeKey() {
-    if (!revokeKey) return
+    if (!revokeKey || employeeSubmitting) return
+    setEmployeeSubmitting(true)
     try {
       await employeeClient.revokePersonalKey(revokeKey.id)
       setPersonalKeys((current) => current.map((key) => key.id === revokeKey.id ? { ...key, status: 'revoked', revoked_at: new Date().toISOString() } : key))
       setRevokeKey(null)
     } catch {
       setEmployeeError('Unable to revoke this key.')
+    } finally {
+      setEmployeeSubmitting(false)
     }
   }
 
   async function loadMoreKeys() {
-    if (!personalKeyCursor) return
-    const response = await employeeClient.listPersonalKeys(personalKeyCursor)
-    setPersonalKeys((current) => [...current, ...response.data])
-    setPersonalKeyCursor(response.pagination.next_cursor)
+    if (!personalKeyCursor || employeePageLoading) return
+    setEmployeePageLoading(true)
+    setEmployeePageError('')
+    try {
+      const response = await employeeClient.listPersonalKeys(personalKeyCursor)
+      const nextCursor = advanceCursor(response.pagination, personalKeyCursors.current)
+      setPersonalKeys((current) => [...current, ...response.data.filter((item) => !current.some((existing) => existing.id === item.id))])
+      setPersonalKeyCursor(nextCursor)
+    } catch (failure: unknown) {
+      if (failure instanceof Error && failure.message === 'INVALID_PAGINATION_CURSOR') setPersonalKeyCursor(undefined)
+      setEmployeePageError('Unable to load more personal keys.')
+    } finally {
+      setEmployeePageLoading(false)
+    }
   }
 
   async function loadMoreUsage() {
-    if (!usageCursor) return
-    const response = await employeeClient.listUsage(usageCursor)
-    setUsageRecords((current) => [...current, ...response.data])
-    setUsageCursor(response.pagination.next_cursor)
+    if (!usageCursor || employeePageLoading) return
+    setEmployeePageLoading(true)
+    setEmployeePageError('')
+    try {
+      const response = await employeeClient.listUsage(usageCursor)
+      const nextCursor = advanceCursor(response.pagination, usageCursors.current)
+      setUsageRecords((current) => [...current, ...response.data.filter((item) => !current.some((existing) => existing.id === item.id))])
+      setUsageCursor(nextCursor)
+    } catch (failure: unknown) {
+      if (failure instanceof Error && failure.message === 'INVALID_PAGINATION_CURSOR') setUsageCursor(undefined)
+      setEmployeePageError('Unable to load more usage records.')
+    } finally {
+      setEmployeePageLoading(false)
+    }
   }
 
   function employeeSurface() {
@@ -268,7 +284,7 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
           {employeeLoading ? <p className="loading-state">Loading personal keys…</p> : employeeError ? <p className="error-state" role="alert">{employeeError}</p> : (
             <><div className="table-wrap" tabIndex={0}><table aria-label="Personal API keys"><thead><tr><th scope="col">Name</th><th scope="col">Prefix</th><th scope="col">Status</th><th scope="col">Created</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead><tbody>
               {personalKeys.length ? personalKeys.map((key) => <tr key={key.id}><td>{key.name}</td><td className="muted-cell">{key.prefix}</td><td>{key.status}</td><td className="muted-cell">{new Date(key.created_at).toLocaleDateString()}</td><td><button className="button button-secondary button-small" type="button" disabled={key.status !== 'active'} onClick={() => setRevokeKey(key)} aria-label={`Revoke ${key.name}`}>Revoke</button></td></tr>) : <tr><td colSpan={5} className="empty-row">No personal keys yet.</td></tr>}
-            </tbody></table></div>{personalKeyCursor && <div className="pagination-actions"><button className="button button-secondary" type="button" onClick={loadMoreKeys}>Load more keys</button></div>}</>
+            </tbody></table></div>{employeePageError && <p className="error-state" role="alert">{employeePageError}</p>}{personalKeyCursor && <div className="pagination-actions"><button className="button button-secondary" type="button" disabled={employeePageLoading} onClick={() => void loadMoreKeys()}>{employeePageLoading ? 'Loading…' : 'Load more keys'}</button></div>}</>
           )}
         </section>
       )
@@ -276,7 +292,7 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
     return (
       <section className="activity-section employee-surface" aria-labelledby="personal-usage-title">
         <div className="section-heading-row"><div><p className="section-kicker">Content-free record</p><h2 id="personal-usage-title">Personal usage</h2></div></div>
-        {employeeLoading ? <p className="loading-state">Loading usage…</p> : employeeError ? <p className="error-state" role="alert">{employeeError}</p> : <><div className="table-wrap" tabIndex={0}><table aria-label="Personal usage"><thead><tr><th scope="col">When</th><th scope="col">Model</th><th scope="col">Outcome</th><th scope="col">Tokens</th></tr></thead><tbody>{usageRecords.length ? usageRecords.map((record) => <tr key={record.id}><td className="muted-cell">{new Date(record.created_at).toLocaleString()}</td><td>{record.model_id}</td><td>{record.outcome}</td><td>{record.usage?.total_tokens ?? 'Unknown'}</td></tr>) : <tr><td colSpan={4} className="empty-row">No usage records yet.</td></tr>}</tbody></table></div>{usageCursor && <div className="pagination-actions"><button className="button button-secondary" type="button" onClick={loadMoreUsage}>Load more usage</button></div>}</>}
+        {employeeLoading ? <p className="loading-state">Loading usage…</p> : employeeError ? <p className="error-state" role="alert">{employeeError}</p> : <><div className="table-wrap" tabIndex={0}><table aria-label="Personal usage"><thead><tr><th scope="col">When</th><th scope="col">Model</th><th scope="col">Outcome</th><th scope="col">Tokens</th></tr></thead><tbody>{usageRecords.length ? usageRecords.map((record) => <tr key={record.id}><td className="muted-cell">{new Date(record.created_at).toLocaleString()}</td><td>{record.model_id}</td><td>{record.outcome}</td><td>{record.usage?.total_tokens ?? 'Unknown'}</td></tr>) : <tr><td colSpan={4} className="empty-row">No usage records yet.</td></tr>}</tbody></table></div>{employeePageError && <p className="error-state" role="alert">{employeePageError}</p>}{usageCursor && <div className="pagination-actions"><button className="button button-secondary" type="button" disabled={employeePageLoading} onClick={() => void loadMoreUsage()}>{employeePageLoading ? 'Loading…' : 'Load more usage'}</button></div>}</>}
       </section>
     )
   }
@@ -331,8 +347,8 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
 
         <div className="sidebar-footer">
           <div className="status-chip">
-            <span className={`status-dot${criticalFaults.length ? ' status-dot-critical' : operationsHealthPending ? ' status-dot-checking' : ''}`} aria-hidden="true" />
-            <span>{criticalFaults.length ? 'Critical fault active' : operationsHealthPending ? 'Checking gateway' : 'Gateway operational'}</span>
+            <span className={`status-dot${role !== 'system_administrator' || operationsHealthPending ? ' status-dot-checking' : criticalFaults.length ? ' status-dot-critical' : ''}`} aria-hidden="true" />
+            <span>{role !== 'system_administrator' ? 'Gateway status unavailable' : criticalFaults.length ? 'Critical fault active' : operationsHealthPending ? 'Checking gateway' : 'Gateway operational'}</span>
           </div>
           <a className="support-link" href="#support">
             <CircleHelp size={17} strokeWidth={1.8} aria-hidden="true" />
@@ -369,9 +385,9 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
               aria-label="Open session details"
               onClick={() => setSessionDialogOpen(true)}
             >
-              <span className="avatar" aria-hidden="true">MC</span>
+              <span className="avatar" aria-hidden="true">{identityEmail ? identityEmail.slice(0, 2).toUpperCase() : 'NA'}</span>
               <span className="profile-copy">
-                <strong>{identityEmail || 'Mira Chen'}</strong>
+                <strong>{identityEmail || 'Current account'}</strong>
                 <small>{roleName(role)}</small>
               </span>
               <ChevronRight className="profile-chevron" size={16} aria-hidden="true" />
@@ -402,25 +418,25 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
                     <div className="signal-icon" aria-hidden="true"><Activity size={18} /></div>
                     <div>
                       <p>Gateway status</p>
-                      <strong>{criticalFaults.length ? 'Action required' : operationsHealthPending ? 'Checking' : 'Operational'}</strong>
+                      <strong>{role !== 'system_administrator' ? 'Not available' : criticalFaults.length ? 'Action required' : operationsHealthPending ? 'Checking' : 'Operational'}</strong>
                     </div>
-                    <span className="signal-meta">{criticalFaults.length ? `${criticalFaults.length} critical condition${criticalFaults.length === 1 ? '' : 's'}` : operationsHealthPending ? 'Loading current status' : 'No critical faults'}</span>
+                    <span className="signal-meta">{role !== 'system_administrator' ? 'Gateway health is restricted to system administrators' : criticalFaults.length ? `${criticalFaults.length} critical condition${criticalFaults.length === 1 ? '' : 's'}` : operationsHealthPending ? 'Loading current status' : 'No critical faults'}</span>
                   </div>
                   <div className="signal-card">
                     <div className="signal-icon signal-icon-blue" aria-hidden="true"><ShieldCheck size={18} /></div>
                     <div>
                       <p>Audit capture</p>
-                      <strong>{auditUnavailable ? 'Unavailable' : operationsHealthPending ? 'Checking' : 'Healthy'}</strong>
+                      <strong>{role !== 'system_administrator' ? 'Not available' : auditUnavailable ? 'Unavailable' : operationsHealthPending ? 'Checking' : 'Healthy'}</strong>
                     </div>
-                    <span className="signal-meta">{auditUnavailable ? 'Chat dispatch blocked' : operationsHealthPending ? 'Loading current status' : 'No active audit fault'}</span>
+                    <span className="signal-meta">{role !== 'system_administrator' ? 'Audit health is restricted to system administrators' : auditUnavailable ? 'Chat dispatch blocked' : operationsHealthPending ? 'Loading current status' : 'No active audit fault'}</span>
                   </div>
                   <div className="signal-card">
                     <div className="signal-icon signal-icon-amber" aria-hidden="true"><Boxes size={18} /></div>
                     <div>
                       <p>Policy</p>
-                      <strong>Global allowlist</strong>
+                      <strong>{role === 'system_administrator' ? 'Global allowlist' : 'Not available'}</strong>
                     </div>
-                    <span className="signal-meta">12 models available</span>
+                    <span className="signal-meta">{role === 'system_administrator' ? 'Current policy is shown in Model policy' : 'No overview policy data is exposed for this role'}</span>
                   </div>
                 </section>
 
@@ -430,17 +446,9 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
                       <p className="section-kicker">At a glance</p>
                       <h2 id="metrics-title">Usage signals</h2>
                     </div>
-                    <span className="timestamp">Today, 10:00 local time</span>
+                    <span className="timestamp">Live data only</span>
                   </div>
-                  <div className="metric-grid">
-                    {metricCards.map((metric) => (
-                      <article className={`metric-card metric-card-${metric.tone}`} key={metric.label}>
-                        <p>{metric.label}</p>
-                        <strong>{metric.value}</strong>
-                        <span>{metric.detail}</span>
-                      </article>
-                    ))}
-                  </div>
+                  <p className="empty-state">No overview aggregates are available for this session.</p>
                 </section>
 
                 <section className="activity-section" aria-labelledby="activity-title">
@@ -449,34 +457,6 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
                       <p className="section-kicker">Content-free record</p>
                       <h2 id="activity-title">Recent activity</h2>
                     </div>
-                    <form className="search-form" role="search" onSubmit={handleSearch}>
-                      <label className="field-label" htmlFor="activity-search">Search activity</label>
-                      <div className="search-input-wrap">
-                        <Search size={17} aria-hidden="true" />
-                        <input
-                          id="activity-search"
-                          name="administration_search"
-                          type="search"
-                          autoComplete="off"
-                          spellCheck={false}
-                          value={searchTerm}
-                          onChange={(event) => setSearchTerm(event.target.value)}
-                          placeholder="Search by actor or action"
-                          aria-label="Search administration"
-                        />
-                        {searchTerm && (
-                          <button
-                            className="clear-search"
-                            type="button"
-                            aria-label="Clear search"
-                            title="Clear search"
-                            onClick={() => setSearchTerm('')}
-                          >
-                            <X size={15} />
-                          </button>
-                        )}
-                      </div>
-                    </form>
                   </div>
                   <div className="table-wrap" tabIndex={0}>
                     <table aria-label="Recent activity">
@@ -484,24 +464,15 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
                         <tr><th scope="col">When</th><th scope="col">Actor</th><th scope="col">Activity</th><th scope="col">Result</th></tr>
                       </thead>
                       <tbody>
-                        {visibleActivity.length > 0 ? visibleActivity.map((row) => (
-                          <tr key={`${row.time}-${row.action}`}>
-                            <td className="muted-cell">{row.time}</td>
-                            <td>{row.actor}</td>
-                            <td>{row.action}</td>
-                            <td><span className="result-tag"><span className="status-dot" aria-hidden="true" />{row.result}</span></td>
-                          </tr>
-                        )) : (
-                          <tr><td className="empty-row" colSpan={4}>No activity matches this search.</td></tr>
-                        )}
+                        <tr><td className="empty-row" colSpan={4}>Activity data is not available in this overview.</td></tr>
                       </tbody>
                     </table>
                   </div>
                 </section>
               </>
             ) : role === 'employee' ? employeeSurface() : role === 'team_administrator' ? (
-              <TeamWorkspace section={activeSection} teamID={teamID} client={teamClient} />
-            ) : <SystemAdminWorkspace key={activeSection} section={activeSection} client={adminClient} />}
+              <TeamWorkspace key={`${activeSection}:${(teamIDs ?? [teamID]).join('|')}`} section={activeSection} teamID={teamID} teamIDs={teamIDs} client={teamClient} />
+            ) : activeSection === 'Security events' ? <SecurityEventsWorkspace client={adminClient} /> : <SystemAdminWorkspace key={activeSection} section={activeSection} client={adminClient} />}
           </div>
         </main>
       </div>
@@ -520,20 +491,33 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
               </button>
             </div>
             <dl className="session-details">
-              <div><dt>Account</dt><dd>{identityEmail || 'mira.chen@company.internal'}</dd></div>
+              <div><dt>Account</dt><dd>{identityEmail || 'Not available'}</dd></div>
               <div><dt>Role</dt><dd>{roleName(role)}</dd></div>
               <div><dt>Session</dt><dd>Internal network · active</dd></div>
             </dl>
             <div className="dialog-actions">
               <button className="button button-secondary" type="button" onClick={() => setSessionDialogOpen(false)}>Close</button>
+              {onLogout && <button className="button button-danger" type="button" disabled={logoutPending} onClick={async () => {
+                if (logoutPending) return
+                setLogoutError('')
+                setLogoutPending(true)
+                try {
+                  await onLogout()
+                } catch {
+                  setLogoutError('Unable to sign out right now.')
+                } finally {
+                  setLogoutPending(false)
+                }
+              }}>{logoutPending ? 'Signing out…' : 'Sign out'}</button>}
             </div>
+            {logoutError && <p className="error-state" role="alert">{logoutError}</p>}
         </ModalDialog>
       )}
 
       {createKeyOpen && (
         <ModalDialog ariaLabelledBy="create-key-title" onDismiss={() => setCreateKeyOpen(false)}>
             <div className="dialog-heading"><div><p className="section-kicker">Credentials</p><h2 id="create-key-title">Create personal key</h2></div><button className="icon-button" type="button" aria-label="Close create key" title="Close create key" onClick={() => setCreateKeyOpen(false)}><X size={18} /></button></div>
-            <form className="dialog-form" onSubmit={submitCreateKey}><label className="field-label" htmlFor="key-name">Key name</label><input id="key-name" name="key_name" aria-label="Key name" autoComplete="off" spellCheck={false} value={createKeyName} onChange={(event) => setCreateKeyName(event.target.value)} maxLength={128} required /><div className="dialog-actions"><button className="button button-secondary" type="button" onClick={() => setCreateKeyOpen(false)}>Cancel</button><button className="button button-primary" type="submit">Create key</button></div></form>
+            <form className="dialog-form" onSubmit={submitCreateKey}><label className="field-label" htmlFor="key-name">Key name</label><input id="key-name" name="key_name" aria-label="Key name" autoComplete="off" spellCheck={false} value={createKeyName} onChange={(event) => setCreateKeyName(event.target.value)} maxLength={128} required /><div className="dialog-actions"><button className="button button-secondary" type="button" onClick={() => setCreateKeyOpen(false)}>Cancel</button><button className="button button-primary" type="submit" disabled={employeeSubmitting}>{employeeSubmitting ? 'Creating…' : 'Create key'}</button></div></form>
         </ModalDialog>
       )}
 
@@ -542,7 +526,7 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
       )}
 
       {revokeKey && (
-        <ModalDialog ariaLabelledBy="revoke-key-title" onDismiss={() => setRevokeKey(null)}><div className="dialog-heading"><div><p className="section-kicker">Destructive action</p><h2 id="revoke-key-title">Revoke personal key</h2></div><button className="icon-button" type="button" aria-label="Close revoke confirmation" title="Close revoke confirmation" onClick={() => setRevokeKey(null)}><X size={18} /></button></div><p className="credential-warning">Revoke <strong>{revokeKey.name}</strong>? Requests using this key will stop immediately.</p><div className="dialog-actions"><button className="button button-secondary" type="button" onClick={() => setRevokeKey(null)}>Cancel</button><button className="button button-danger" type="button" onClick={confirmRevokeKey}>Confirm revoke</button></div></ModalDialog>
+        <ModalDialog ariaLabelledBy="revoke-key-title" onDismiss={() => setRevokeKey(null)}><div className="dialog-heading"><div><p className="section-kicker">Destructive action</p><h2 id="revoke-key-title">Revoke personal key</h2></div><button className="icon-button" type="button" aria-label="Close revoke confirmation" title="Close revoke confirmation" onClick={() => setRevokeKey(null)}><X size={18} /></button></div><p className="credential-warning">Revoke <strong>{revokeKey.name}</strong>? Requests using this key will stop immediately.</p><div className="dialog-actions"><button className="button button-secondary" type="button" onClick={() => setRevokeKey(null)}>Cancel</button><button className="button button-danger" type="button" disabled={employeeSubmitting} onClick={confirmRevokeKey}>{employeeSubmitting ? 'Revoking…' : 'Confirm revoke'}</button></div></ModalDialog>
       )}
     </div>
   )

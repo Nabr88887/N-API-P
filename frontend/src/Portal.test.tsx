@@ -39,6 +39,19 @@ it('shows anonymous recovery modes and reboots the session after login', async (
   expect(await screen.findByText('employee@example.internal')).toBeInTheDocument()
 })
 
+it('ends the server session and returns to sign in', async () => {
+  const user = userEvent.setup()
+  const client = portalClient()
+  render(<Portal client={client} />)
+
+  await screen.findByText('employee@example.internal')
+  await user.click(screen.getByRole('button', { name: 'Open session details' }))
+  await user.click(screen.getByRole('button', { name: 'Sign out' }))
+
+  await waitFor(() => expect(client.logout).toHaveBeenCalledOnce())
+  expect(await screen.findByRole('heading', { name: 'Sign in' })).toBeInTheDocument()
+})
+
 function portalClient(): PortalClient {
   return {
     me: vi.fn().mockResolvedValue({ id: 'employee-1', email: 'employee@example.internal', role: 'employee', team_ids: ['team-1'] }),

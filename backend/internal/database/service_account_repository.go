@@ -100,7 +100,9 @@ FROM api_keys AS k
 JOIN service_accounts AS sa ON sa.id = k.service_account_id
 WHERE k.service_account_id = $1
   AND k.kind = 'service'
-ORDER BY k.created_at DESC, k.id DESC`
+  AND ($2::timestamptz IS NULL OR (k.created_at, k.id) < ($2, $3::uuid))
+ORDER BY k.created_at DESC, k.id DESC
+LIMIT $4`
 
 const lockActiveServiceAccountKeySQL = `
 SELECT id::text, prefix
@@ -240,20 +242,41 @@ func (r *Repository) CreateServiceAccountKey(ctx context.Context, record access.
 	return key, err
 }
 
-func (r *Repository) ListServiceAccountKeys(ctx context.Context, serviceAccountID, actorIdentityID string) (keys []access.ServiceAccountKey, err error) {
+func (r *Repository) ListServiceAccountKeys(ctx context.Context, serviceAccountID, actorIdentityID string) ([]access.ServiceAccountKey, error) {
+	page, err := r.ListServiceAccountKeysPage(ctx, serviceAccountID, actorIdentityID, "", access.MaxAdministrationPageSize)
+	return page.Keys, err
+}
+
+func (r *Repository) ListServiceAccountKeysPage(ctx context.Context, serviceAccountID, actorIdentityID, encodedCursor string, limit int) (page access.ServiceAccountKeyPage, err error) {
+	cursor, cursorErr := decodeAdministrationCursor(encodedCursor)
+	if cursorErr != nil || limit < 1 || limit > access.MaxAdministrationPageSize {
+		return access.ServiceAccountKeyPage{}, access.ErrInvalidServiceAccountKey
+	}
+	var cursorTime, cursorID any
+	if cursor != nil {
+		cursorTime, cursorID = cursor.CreatedAt.UTC(), cursor.ID
+	}
 	err = r.withTransaction(ctx, "list service account keys", func(tx *sql.Tx) error {
 		if err := requireActiveSystemAdministrator(ctx, tx, actorIdentityID); err != nil {
 			return err
 		}
-		rows, err := tx.QueryContext(ctx, listServiceAccountKeysSQL, serviceAccountID)
+		rows, err := tx.QueryContext(ctx, listServiceAccountKeysSQL, serviceAccountID, cursorTime, cursorID, limit+1)
 		if err != nil {
 			return fmt.Errorf("query service account keys: %w", err)
 		}
-		var scanErr error
-		keys, scanErr = scanServiceAccountKeys(rows)
-		return scanErr
+		keys, scanErr := scanServiceAccountKeys(rows)
+		if scanErr != nil {
+			return scanErr
+		}
+		if len(keys) > limit {
+			last := keys[limit-1]
+			page.NextCursor = encodeAdministrationCursor(administrationCursor{CreatedAt: last.CreatedAt, ID: last.ID})
+			keys = keys[:limit]
+		}
+		page.Keys = keys
+		return nil
 	})
-	return keys, err
+	return page, err
 }
 
 func scanServiceAccounts(rows *sql.Rows) (accounts []access.ServiceAccount, err error) {

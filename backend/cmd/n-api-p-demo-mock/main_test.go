@@ -21,6 +21,10 @@ func TestDemoHandlerServesModelsAndRegularChat(t *testing.T) {
 	if err != nil || models.StatusCode != http.StatusOK {
 		t.Fatalf("models request = (%v, %d)", err, models.StatusCode)
 	}
+	modelBody, err := io.ReadAll(models.Body)
+	if err != nil || !strings.Contains(string(modelBody), `"created":1700000000`) {
+		t.Fatalf("models body = %q, want strict model metadata", modelBody)
+	}
 	_ = models.Body.Close()
 
 	chatRequest, err := http.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions", strings.NewReader(`{"model":"demo-model","messages":[]}`))

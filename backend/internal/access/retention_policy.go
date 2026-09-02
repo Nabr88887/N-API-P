@@ -87,6 +87,20 @@ func (service *RetentionPolicyService) Get(ctx context.Context, session ActivePo
 	return policy, nil
 }
 
+// CurrentRetention returns the persisted policy for data-plane request handling.
+// It deliberately does not require a portal session; authorization for changing
+// the policy remains in Get/Change while callers use this read-only snapshot.
+func (service *RetentionPolicyService) CurrentRetention(ctx context.Context) (time.Duration, error) {
+	if service == nil || service.repository == nil {
+		return 0, ErrRetentionPolicyUnavailable
+	}
+	policy, err := service.repository.ReadRetentionPolicy(ctx)
+	if err != nil || policy.Days < 1 || policy.Days > service.maximumDays {
+		return 0, ErrRetentionPolicyUnavailable
+	}
+	return time.Duration(policy.Days) * 24 * time.Hour, nil
+}
+
 func (service *RetentionPolicyService) Change(ctx context.Context, session ActivePortalSession, input RetentionPolicyChangeInput) (RetentionPolicy, error) {
 	if service == nil || service.repository == nil || service.newID == nil || input.RequestID == "" {
 		return RetentionPolicy{}, ErrInvalidRetentionPolicy

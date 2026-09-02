@@ -68,7 +68,7 @@ func TestAdminPortalRouterRegistersDeclaredAdministrationResourceRoutes(t *testi
 		PasswordResets: &fakePasswordResetService{}, ServiceKeys: serviceAccounts, ServiceKeyRevoke: serviceAccounts,
 		Models: &fakeAdminModelPolicyService{}, Retention: &fakeAdminRetentionPolicyService{}, Administration: administration,
 		Audits: audits, RawView: &fakeRawViewService{view: audit.RawView{AuditID: rawViewHTTPAuditID, RequestJSON: json.RawMessage(`{}`), ResponseJSON: json.RawMessage(`{}`)}},
-		Operations: &fakeOperationsService{}, Offboarding: offboarding, ServiceAccount: serviceAccounts,
+		Operations: &fakeOperationsService{}, Offboarding: offboarding, ServiceAccount: serviceAccounts, Identity: &adminIdentityServiceFake{}, SecurityEvents: administration,
 	})
 	if err != nil {
 		t.Fatalf("NewAdminPortalRouter() error = %v", err)
@@ -166,6 +166,43 @@ func TestAdminServiceKeyHandlerRevealsCredentialOnlyOnCreate(t *testing.T) {
 	if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("Cache-Control = %q, want no-store", got)
 	}
+}
+
+func TestAdminServiceKeyListUsesBoundedOpaquePagination(t *testing.T) {
+	service := &fakeAdminServiceAccountService{keyPage: access.ServiceAccountKeyPage{
+		Keys:       []access.ServiceAccountKey{{ID: "key-1", ServiceAccountID: "service-1", Name: "build"}},
+		NextCursor: "opaque-next",
+	}}
+	handler := withEmployeeSession(NewAdminServiceKeyListHandler(service), access.ActivePortalSession{IdentityID: "admin-1", Role: access.RoleSystemAdministrator})
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/service-accounts/service-1/keys?limit=1&cursor=opaque-current", nil))
+	if recorder.Code != http.StatusOK || service.keyListInput.ServiceAccountID != "service-1" || service.keyListCursor != "opaque-current" || service.keyListLimit != 1 {
+		t.Fatalf("response/input = %d / %#v / %q / %d: %s", recorder.Code, service.keyListInput, service.keyListCursor, service.keyListLimit, recorder.Body.String())
+	}
+	var response PagedResponse[Key]
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || len(response.Data) != 1 || response.Pagination.NextCursor != "opaque-next" || !response.Pagination.HasMore {
+		t.Fatalf("service key page = %#v, error = %v", response, err)
+	}
+}
+
+func TestAdminSecurityEventListParsesFiltersAndRejectsInvalidTimeRange(t *testing.T) {
+	service := &fakeAdministrationService{securityEventPage: access.AdministrationSecurityEventPage{Events: []access.AdministrationSecurityEvent{{ID: "event-1", EventType: "login", RequestID: "request-1", Outcome: access.SecurityEventSuccess, OccurredAt: adminWorkflowNow}}, NextCursor: "next-event"}}
+	handler := withEmployeeSession(NewAdminSecurityEventListHandler(service), access.ActivePortalSession{IdentityID: "admin-1", Role: access.RoleSystemAdministrator})
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/security-events?limit=1&event_type=login&outcome=success&from=2026-08-12T08:00:00Z&to=2026-08-12T10:00:00%2B00:00", nil))
+	if recorder.Code != http.StatusOK || service.securityEventFilter.Limit != 1 || service.securityEventFilter.EventType == nil || *service.securityEventFilter.EventType != "login" || service.securityEventFilter.Outcome == nil || *service.securityEventFilter.Outcome != access.SecurityEventSuccess || service.securityEventFilter.From == nil || service.securityEventFilter.To == nil {
+		t.Fatalf("response/filter = %d / %#v", recorder.Code, service.securityEventFilter)
+	}
+	var response PagedResponse[SecurityEventMetadata]
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || !response.Pagination.HasMore || response.Pagination.NextCursor != "next-event" {
+		t.Fatalf("security event page = %#v, error = %v", response, err)
+	}
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/security-events?from=not-a-time", nil))
+	assertHTTPError(t, recorder, http.StatusBadRequest, CodeInvalidRequest)
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/security-events?from=2026-08-12T10:00:00Z&to=2026-08-12T09:00:00Z", nil))
+	assertHTTPError(t, recorder, http.StatusBadRequest, CodeInvalidRequest)
 }
 
 func TestAdminPasswordResetHandlerRequiresManualVerificationAndMapsCompromise(t *testing.T) {
@@ -440,13 +477,17 @@ func (service *fakeAdminRetentionPolicyService) Change(_ context.Context, _ acce
 }
 
 type fakeAdminServiceAccountService struct {
-	issuance     access.ServiceAccountKeyIssuance
-	accounts     []access.ServiceAccount
-	keys         []access.ServiceAccountKey
-	called       bool
-	revokeCalled bool
-	rotateCalled bool
-	createInput  access.CreateServiceAccountInput
+	issuance      access.ServiceAccountKeyIssuance
+	accounts      []access.ServiceAccount
+	keys          []access.ServiceAccountKey
+	keyPage       access.ServiceAccountKeyPage
+	keyListInput  access.ListServiceAccountKeysInput
+	keyListCursor string
+	keyListLimit  int
+	called        bool
+	revokeCalled  bool
+	rotateCalled  bool
+	createInput   access.CreateServiceAccountInput
 }
 
 func (service *fakeAdminServiceAccountService) Create(_ context.Context, input access.CreateServiceAccountInput) (access.ServiceAccount, error) {
@@ -463,6 +504,13 @@ func (service *fakeAdminServiceAccountService) ListKeys(context.Context, access.
 	return service.keys, nil
 }
 
+func (service *fakeAdminServiceAccountService) ListKeysPage(_ context.Context, input access.ListServiceAccountKeysInput, cursor string, limit int) (access.ServiceAccountKeyPage, error) {
+	service.keyListInput = input
+	service.keyListCursor = cursor
+	service.keyListLimit = limit
+	return service.keyPage, nil
+}
+
 func (service *fakeAdminServiceAccountService) RotateKey(context.Context, access.RotateServiceAccountKeyInput) (access.ServiceAccountKeyIssuance, error) {
 	service.rotateCalled = true
 	return service.issuance, nil
@@ -477,17 +525,19 @@ func (service *fakeAdminServiceAccountService) CreateKey(_ context.Context, inpu
 }
 
 type fakeAdministrationService struct {
-	invitationPage     access.AdministrationInvitationPage
-	accountPage        access.AdministrationAccountPage
-	teamPage           access.AdministrationTeamPage
-	serviceAccountPage access.AdministrationServiceAccountPage
-	accountFilter      access.AdministrationAccountFilter
-	roleInput          access.ChangeRoleInput
-	roleCalled         bool
-	membershipCalled   bool
-	account            access.AdministrationAccount
-	team               access.AdministrationTeam
-	serviceAccount     access.ServiceAccount
+	invitationPage      access.AdministrationInvitationPage
+	accountPage         access.AdministrationAccountPage
+	teamPage            access.AdministrationTeamPage
+	serviceAccountPage  access.AdministrationServiceAccountPage
+	securityEventPage   access.AdministrationSecurityEventPage
+	securityEventFilter access.AdministrationSecurityEventFilter
+	accountFilter       access.AdministrationAccountFilter
+	roleInput           access.ChangeRoleInput
+	roleCalled          bool
+	membershipCalled    bool
+	account             access.AdministrationAccount
+	team                access.AdministrationTeam
+	serviceAccount      access.ServiceAccount
 }
 
 func (service *fakeAdministrationService) ListInvitations(context.Context, access.Actor, access.AdministrationInvitationFilter) (access.AdministrationInvitationPage, error) {
@@ -496,6 +546,11 @@ func (service *fakeAdministrationService) ListInvitations(context.Context, acces
 
 func (service *fakeAdministrationService) ListServiceAccounts(context.Context, access.Actor, access.AdministrationServiceAccountFilter) (access.AdministrationServiceAccountPage, error) {
 	return service.serviceAccountPage, nil
+}
+
+func (service *fakeAdministrationService) ListSecurityEvents(_ context.Context, _ access.Actor, filter access.AdministrationSecurityEventFilter) (access.AdministrationSecurityEventPage, error) {
+	service.securityEventFilter = filter
+	return service.securityEventPage, nil
 }
 
 func (service *fakeAdministrationService) ListAccounts(_ context.Context, _ access.Actor, filter access.AdministrationAccountFilter) (access.AdministrationAccountPage, error) {

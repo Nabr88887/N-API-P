@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"n-api-p/internal/access"
+	"n-api-p/internal/usage"
 )
 
 const listAllowedModelIDsSQL = `
@@ -59,6 +60,26 @@ func (r *Repository) ListAllowedModelIDs(ctx context.Context) ([]string, error) 
 		return nil, fmt.Errorf("iterate allowed model IDs: %w", err)
 	}
 	return modelIDs, nil
+}
+
+// ReadModelPrice returns the immutable price facts currently configured for an
+// allowed model. A nil snapshot means the model is allowed but unpriced.
+func (r *Repository) ReadModelPrice(ctx context.Context, modelID string) (*usage.PriceSnapshot, error) {
+	if r == nil || r.db == nil || modelID == "" {
+		return nil, errors.New("invalid model price request")
+	}
+	var inputPrice, outputPrice, version sql.NullString
+	err := r.db.QueryRowContext(ctx, `SELECT input_unit_price::text, output_unit_price::text, price_version FROM model_allowlist WHERE model_id = $1 AND status = 'allowed'`, modelID).Scan(&inputPrice, &outputPrice, &version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read model price: %w", err)
+	}
+	if !inputPrice.Valid || !outputPrice.Valid || !version.Valid {
+		return nil, nil
+	}
+	return &usage.PriceSnapshot{Version: version.String, InputUnitPrice: inputPrice.String, OutputUnitPrice: outputPrice.String}, nil
 }
 
 func (r *Repository) ReadModelAllowlist(ctx context.Context) ([]access.ModelAllowlistEntry, error) {
