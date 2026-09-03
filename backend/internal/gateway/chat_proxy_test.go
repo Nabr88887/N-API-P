@@ -42,7 +42,7 @@ func TestChatProxyHandlerProxiesSuccessAndLinksAuditUsage(t *testing.T) {
 	if capture.input.ID != "generated-id" || !bytes.Equal(capture.input.ValidatedRequestJSON, body) {
 		t.Fatalf("initial capture = %+v, want generated-id and exact request", capture.input)
 	}
-	if finalizer.input.AuditID != "generated-id" || finalizer.input.Outcome != audit.AuditOutcomeSuccess || !bytes.Equal(finalizer.input.ResponseJSON, responseBody) {
+	if finalizer.input.AuditID != "generated-id" || finalizer.input.Outcome != audit.AuditOutcomeSuccess || finalizer.input.FinishReason != "stop" || !bytes.Equal(finalizer.input.ResponseJSON, responseBody) {
 		t.Fatalf("final audit input = %+v, want linked complete success", finalizer.input)
 	}
 	if usageRepo.record.AuditID != "generated-id" || usageRepo.record.RequestID != "request-1" || usageRepo.record.UpstreamRequestID != "upstream-1" || usageRepo.record.Outcome != usage.OutcomeSuccess || usageRepo.record.Usage == nil || usageRepo.record.Usage.TotalTokens != 5 {

@@ -292,7 +292,7 @@ func (handler *ChatProxyHandler) ServeHTTP(writer http.ResponseWriter, request *
 	bounded, readErr := ReadBoundedLogicalResponse(upstreamResponse.Body, handler.responseLimit)
 	if readErr != nil {
 		if errors.Is(readErr, ErrUpstreamResponseTooLarge) {
-			finalErr := handler.finalize(request.Context(), caller, captureReceipt, chatRequest.Model, createdAt, bounded.Content(), bounded.ObservedBytes(), upstreamResponse, audit.CaptureStatusTruncated, audit.AuditOutcomeLocalError, "UPSTREAM_RESPONSE_TOO_LARGE", nil)
+			finalErr := handler.finalize(request.Context(), caller, captureReceipt, chatRequest.Model, createdAt, bounded.Content(), bounded.ObservedBytes(), upstreamResponse, audit.CaptureStatusTruncated, audit.AuditOutcomeLocalError, "UPSTREAM_RESPONSE_TOO_LARGE", nil, "")
 			if finalErr != nil {
 				writeChatError(writer, httpapi.CodeAuditUnavailable)
 				return
@@ -314,9 +314,10 @@ func (handler *ChatProxyHandler) ServeHTTP(writer http.ResponseWriter, request *
 	responseErrorCode := ""
 	responseInvalid := false
 	var tokenUsage *usage.TokenUsage
+	finishReason := ""
 	valid := false
 	if status >= 200 && status < 300 {
-		valid, tokenUsage = validateChatCompletionResponse(responseBody)
+		valid, tokenUsage, finishReason = validateChatCompletionResponse(responseBody)
 		if !valid {
 			outcome = audit.AuditOutcomeUpstreamError
 			responseErrorCode = string(httpapi.CodeUpstreamError)
@@ -345,7 +346,7 @@ func (handler *ChatProxyHandler) ServeHTTP(writer http.ResponseWriter, request *
 			captureStatus = audit.CaptureStatusIncomplete
 			finalOutcome = audit.AuditOutcomeLocalError
 		}
-		finalErr := handler.finalize(request.Context(), caller, captureReceipt, chatRequest.Model, createdAt, bounded.Content(), bounded.ObservedBytes(), upstreamResponse, captureStatus, finalOutcome, responseErrorCode, nil)
+		finalErr := handler.finalize(request.Context(), caller, captureReceipt, chatRequest.Model, createdAt, bounded.Content(), bounded.ObservedBytes(), upstreamResponse, captureStatus, finalOutcome, responseErrorCode, nil, "")
 		if finalErr != nil {
 			writeChatError(writer, httpapi.CodeAuditUnavailable)
 			return
@@ -353,7 +354,7 @@ func (handler *ChatProxyHandler) ServeHTTP(writer http.ResponseWriter, request *
 		writeChatError(writer, httpapi.CodeUpstreamError)
 		return
 	}
-	finalErr := handler.finalize(request.Context(), caller, captureReceipt, chatRequest.Model, createdAt, bounded.Content(), bounded.ObservedBytes(), upstreamResponse, audit.CaptureStatusComplete, outcome, responseErrorCode, tokenUsage)
+	finalErr := handler.finalize(request.Context(), caller, captureReceipt, chatRequest.Model, createdAt, bounded.Content(), bounded.ObservedBytes(), upstreamResponse, audit.CaptureStatusComplete, outcome, responseErrorCode, tokenUsage, finishReason)
 	if finalErr != nil {
 		writeChatError(writer, httpapi.CodeAuditUnavailable)
 		return
@@ -404,16 +405,33 @@ func (handler *ChatProxyHandler) serveStreaming(writer http.ResponseWriter, requ
 		if upstreamResponse != nil && upstreamResponse.Body != nil {
 			defer upstreamResponse.Body.Close()
 			bounded, readErr := ReadBoundedLogicalResponse(upstreamResponse.Body, handler.responseLimit)
+			if errors.Is(readErr, ErrUpstreamResponseTooLarge) {
+				if finalErr := handler.finalizeStream(caller, receipt, chatRequest.Model, createdAt, bounded.Content(), bounded.ObservedBytes(), upstreamResponse, audit.CaptureStatusTruncated, audit.AuditOutcomeLocalError, string(httpapi.CodeUpstreamResponseTooLarge), nil, ""); finalErr != nil {
+					writeChatError(writer, httpapi.CodeAuditUnavailable)
+					return
+				}
+				writeChatError(writer, httpapi.CodeUpstreamResponseTooLarge)
+				return
+			}
 			if readErr == nil {
-				if valid, code := validateUpstreamErrorResponse(bounded.Content()); valid {
-					if finalErr := handler.finalizeStream(caller, receipt, chatRequest.Model, createdAt, bounded.Content(), bounded.ObservedBytes(), upstreamResponse, audit.CaptureStatusComplete, audit.AuditOutcomeUpstreamError, code, nil, ""); finalErr != nil {
+				responseBody := bounded.Content()
+				if valid, code := validateUpstreamErrorResponse(responseBody); valid {
+					if finalErr := handler.finalizeStream(caller, receipt, chatRequest.Model, createdAt, responseBody, bounded.ObservedBytes(), upstreamResponse, audit.CaptureStatusComplete, audit.AuditOutcomeUpstreamError, code, nil, ""); finalErr != nil {
 						writeChatError(writer, httpapi.CodeAuditUnavailable)
 						return
 					}
 					writer.Header().Set("Content-Type", "application/json")
 					setRequestIDHeader(writer, request, upstreamResponse.RequestID)
 					writer.WriteHeader(upstreamResponse.StatusCode)
-					_, _ = writer.Write(bounded.Content())
+					_, _ = writer.Write(responseBody)
+					return
+				}
+				if len(responseBody) > 0 {
+					if finalErr := handler.finalizeStream(caller, receipt, chatRequest.Model, createdAt, responseBody, bounded.ObservedBytes(), upstreamResponse, audit.CaptureStatusComplete, audit.AuditOutcomeUpstreamError, string(httpapi.CodeUpstreamError), nil, ""); finalErr != nil {
+						writeChatError(writer, httpapi.CodeAuditUnavailable)
+						return
+					}
+					writeChatError(writer, httpapi.CodeUpstreamError)
 					return
 				}
 			}
@@ -524,10 +542,10 @@ func (handler *ChatProxyHandler) finalizeLocalFailure(ctx context.Context, calle
 }
 
 func (handler *ChatProxyHandler) finalizeLocalFailureWithCode(ctx context.Context, caller ChatCaller, receipt audit.CaptureReceipt, model string, createdAt time.Time, code string, outcome audit.AuditOutcome) error {
-	return handler.finalize(ctx, caller, receipt, model, createdAt, nil, 0, nil, audit.CaptureStatusIncomplete, outcome, code, nil)
+	return handler.finalize(ctx, caller, receipt, model, createdAt, nil, 0, nil, audit.CaptureStatusIncomplete, outcome, code, nil, "")
 }
 
-func (handler *ChatProxyHandler) finalize(ctx context.Context, caller ChatCaller, receipt audit.CaptureReceipt, model string, createdAt time.Time, body []byte, observed int64, response *NewAPIResponse, status audit.CaptureStatus, outcome audit.AuditOutcome, errorCode string, tokenUsage *usage.TokenUsage) error {
+func (handler *ChatProxyHandler) finalize(ctx context.Context, caller ChatCaller, receipt audit.CaptureReceipt, model string, createdAt time.Time, body []byte, observed int64, response *NewAPIResponse, status audit.CaptureStatus, outcome audit.AuditOutcome, errorCode string, tokenUsage *usage.TokenUsage, finishReason string) error {
 	var upstreamStatus *int
 	upstreamRequestID := ""
 	if response != nil {
@@ -535,14 +553,10 @@ func (handler *ChatProxyHandler) finalize(ctx context.Context, caller ChatCaller
 		upstreamStatus = &value
 		upstreamRequestID = response.RequestID
 	}
-	if err := handler.finalizerAndUsage(ctx, caller, receipt, model, createdAt, body, observed, status, outcome, errorCode, upstreamRequestID, upstreamStatus, tokenUsage); err != nil {
+	if err := handler.finalizerAndUsageWithFinish(ctx, caller, receipt, model, createdAt, body, observed, status, outcome, errorCode, upstreamRequestID, upstreamStatus, tokenUsage, finishReason); err != nil {
 		return err
 	}
 	return nil
-}
-
-func (handler *ChatProxyHandler) finalizerAndUsage(ctx context.Context, caller ChatCaller, receipt audit.CaptureReceipt, model string, createdAt time.Time, body []byte, observed int64, status audit.CaptureStatus, outcome audit.AuditOutcome, errorCode, upstreamRequestID string, upstreamStatus *int, tokenUsage *usage.TokenUsage) error {
-	return handler.finalizerAndUsageWithFinish(ctx, caller, receipt, model, createdAt, body, observed, status, outcome, errorCode, upstreamRequestID, upstreamStatus, tokenUsage, "")
 }
 
 func (handler *ChatProxyHandler) finalizerAndUsageWithFinish(ctx context.Context, caller ChatCaller, receipt audit.CaptureReceipt, model string, createdAt time.Time, body []byte, observed int64, status audit.CaptureStatus, outcome audit.AuditOutcome, errorCode, upstreamRequestID string, upstreamStatus *int, tokenUsage *usage.TokenUsage, finishReason string) error {
@@ -616,7 +630,7 @@ func (handler *ChatProxyHandler) markUsagePersistenceFailure(ctx context.Context
 	return ErrUsagePersistenceFailed
 }
 
-func validateChatCompletionResponse(data []byte) (bool, *usage.TokenUsage) {
+func validateChatCompletionResponse(data []byte) (bool, *usage.TokenUsage, string) {
 	var envelope struct {
 		ID      string            `json:"id"`
 		Model   string            `json:"model"`
@@ -628,16 +642,27 @@ func validateChatCompletionResponse(data []byte) (bool, *usage.TokenUsage) {
 		} `json:"usage"`
 	}
 	if !decodeUpstreamJSON(data, &envelope) || envelope.ID == "" || envelope.Model == "" || envelope.Choices == nil || len(envelope.Choices) == 0 {
-		return false, nil
+		return false, nil, ""
 	}
+	seenChoiceIndices := make(map[int]struct{}, len(envelope.Choices))
+	primaryChoiceIndex := -1
+	primaryFinishReason := ""
 	for _, choice := range envelope.Choices {
 		var fields map[string]json.RawMessage
 		if !decodeUpstreamJSON(choice, &fields) {
-			return false, nil
+			return false, nil, ""
 		}
 		var index int
 		if rawIndex, ok := fields["index"]; !ok || json.Unmarshal(rawIndex, &index) != nil || index < 0 {
-			return false, nil
+			return false, nil, ""
+		}
+		if _, duplicate := seenChoiceIndices[index]; duplicate {
+			return false, nil, ""
+		}
+		seenChoiceIndices[index] = struct{}{}
+		var finishReason string
+		if rawFinishReason, ok := fields["finish_reason"]; !ok || json.Unmarshal(rawFinishReason, &finishReason) != nil || !safeStreamFact(finishReason) {
+			return false, nil, ""
 		}
 		var message struct {
 			Role      string          `json:"role"`
@@ -645,19 +670,31 @@ func validateChatCompletionResponse(data []byte) (bool, *usage.TokenUsage) {
 			ToolCalls []ChatToolCall  `json:"tool_calls"`
 		}
 		if rawMessage, ok := fields["message"]; !ok || !decodeUpstreamJSON(rawMessage, &message) || message.Role == "" {
-			return false, nil
+			return false, nil, ""
 		}
-		if message.Role != string(MessageRoleAssistant) || !validResponseContent(message.Content) {
-			return false, nil
+		contentMissing := len(message.Content) == 0 || bytes.Equal(bytes.TrimSpace(message.Content), []byte("null"))
+		if message.Role != string(MessageRoleAssistant) || !validResponseContent(message.Content) || contentMissing && len(message.ToolCalls) == 0 {
+			return false, nil, ""
+		}
+		seenToolCallIDs := make(map[string]struct{}, len(message.ToolCalls))
+		for _, toolCall := range message.ToolCalls {
+			if _, duplicate := seenToolCallIDs[toolCall.ID]; duplicate {
+				return false, nil, ""
+			}
+			seenToolCallIDs[toolCall.ID] = struct{}{}
+		}
+		if primaryChoiceIndex == -1 || index < primaryChoiceIndex {
+			primaryChoiceIndex = index
+			primaryFinishReason = finishReason
 		}
 	}
 	if envelope.Usage == nil {
-		return true, nil
+		return true, nil, primaryFinishReason
 	}
 	if envelope.Usage.PromptTokens < 0 || envelope.Usage.CompletionTokens < 0 || envelope.Usage.TotalTokens < 0 || envelope.Usage.TotalTokens != envelope.Usage.PromptTokens+envelope.Usage.CompletionTokens {
-		return false, nil
+		return false, nil, ""
 	}
-	return true, &usage.TokenUsage{InputTokens: envelope.Usage.PromptTokens, OutputTokens: envelope.Usage.CompletionTokens, TotalTokens: envelope.Usage.TotalTokens}
+	return true, &usage.TokenUsage{InputTokens: envelope.Usage.PromptTokens, OutputTokens: envelope.Usage.CompletionTokens, TotalTokens: envelope.Usage.TotalTokens}, primaryFinishReason
 }
 
 func validResponseContent(content json.RawMessage) bool {
@@ -696,6 +733,9 @@ func safeUpstreamCode(value string) bool {
 }
 
 func decodeUpstreamJSON(data []byte, destination any) bool {
+	if !uniqueJSONFields(data) {
+		return false
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	if decoder.Decode(destination) != nil {
 		return false

@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+
 import { AlertTriangle, CheckCircle2 } from 'lucide-react'
 
 import type { AdminPortalClient, HealthResponse, OperationalEvent } from './admin-api'
 import { activeCriticalFaults, faultCopy, isFaultCode, type FaultCode } from './operational-faults'
+import { advanceCursor } from './pagination'
 type SafeOperationalEvent = OperationalEvent & { event_type: FaultCode; severity: 'critical' | 'recovery' }
 
 export function CriticalFaultBanners({ health }: { health: HealthResponse | null }) {
@@ -26,13 +28,16 @@ export function OperationsWorkspace({ client }: { client: AdminPortalClient }) {
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState('')
+  const seenCursors = useRef(new Set<string>())
 
   useEffect(() => {
     let cancelled = false
+    const cursors = new Set<string>()
+    seenCursors.current = cursors
     client.listOperationalEvents().then((page) => {
       if (!cancelled) {
         setEvents(safeEvents(page.data))
-        setCursor(page.pagination.next_cursor)
+        setCursor(advanceCursor(page.pagination, cursors))
       }
     }).catch(() => {
       if (!cancelled) setError('Unable to load operational events.')
@@ -48,9 +53,11 @@ export function OperationsWorkspace({ client }: { client: AdminPortalClient }) {
     setError('')
     try {
       const page = await client.listOperationalEvents({ cursor })
+      const nextCursor = advanceCursor(page.pagination, seenCursors.current)
       setEvents((current) => appendEvents(current, safeEvents(page.data)))
-      setCursor(page.pagination.next_cursor)
-    } catch {
+      setCursor(nextCursor)
+    } catch (failure: unknown) {
+      if (failure instanceof Error && failure.message === 'INVALID_PAGINATION_CURSOR') setCursor(undefined)
       setError('Unable to load more operational events.')
     } finally {
       setLoadingMore(false)

@@ -28,7 +28,8 @@ export function TeamWorkspace({ section, teamID, teamIDs = [], client }: TeamWor
   const [memberCursor, setMemberCursor] = useState<string | undefined>()
   const [usageCursor, setUsageCursor] = useState<string | undefined>()
   const [selectedAccountID, setSelectedAccountID] = useState('')
-  const [loading, setLoading] = useState(true)
+  const loadKey = JSON.stringify([section, selectedTeamID, selectedAccountID])
+  const [loadedKey, setLoadedKey] = useState('')
   const [error, setError] = useState('')
   const [paginationError, setPaginationError] = useState('')
   const [membersLoading, setMembersLoading] = useState(false)
@@ -38,7 +39,6 @@ export function TeamWorkspace({ section, teamID, teamIDs = [], client }: TeamWor
 
   function switchTeam(nextTeamID: string) {
     setSelectedAccountID('')
-    setLoading(true)
     setError('')
     setPaginationError('')
     setMembers([])
@@ -72,13 +72,18 @@ export function TeamWorkspace({ section, teamID, teamIDs = [], client }: TeamWor
           setUsageCursor(advanceCursor(usageResponse.pagination, cursors))
         }
       })
-    load.catch(() => {
+    load.then(() => {
+      if (!cancelled) {
+        setError('')
+        setPaginationError('')
+      }
+    }).catch(() => {
       if (!cancelled) setError('Unable to load this team workspace right now.')
     }).finally(() => {
-      if (!cancelled) setLoading(false)
+      if (!cancelled) setLoadedKey(loadKey)
     })
     return () => { cancelled = true }
-  }, [client, section, selectedAccountID, selectedTeamID])
+  }, [client, loadKey, section, selectedAccountID, selectedTeamID])
 
   async function loadMoreMembers() {
     if (!memberCursor || membersLoading || !selectedTeamID) return
@@ -125,7 +130,7 @@ export function TeamWorkspace({ section, teamID, teamIDs = [], client }: TeamWor
   }
 
   if (!selectedTeamID) return <p className="error-state" role="alert">No assigned team is available for this session.</p>
-  if (loading) return <p className="loading-state">Loading team data…</p>
+  if (loadedKey !== loadKey) return <p className="loading-state">Loading team data…</p>
   if (error) return <p className="error-state" role="alert">{error}</p>
 
   if (section === 'Team members') {

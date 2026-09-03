@@ -99,7 +99,12 @@ func ReadSSEStream(reader io.Reader, limit int64, forward func(SSEEvent) error) 
 		sort.Ints(indices)
 		logical.Choices = logical.Choices[:0]
 		for _, index := range indices {
-			logical.Choices = append(logical.Choices, *choices[index])
+			choice := *choices[index]
+			choice.ToolCalls = append([]SSELogicalToolCall(nil), choice.ToolCalls...)
+			sort.Slice(choice.ToolCalls, func(i, j int) bool {
+				return choice.ToolCalls[i].Index < choice.ToolCalls[j].Index
+			})
+			logical.Choices = append(logical.Choices, choice)
 		}
 	}
 	defer refreshChoices()
@@ -125,6 +130,10 @@ func ReadSSEStream(reader io.Reader, limit int64, forward func(SSEEvent) error) 
 			if seenTerminal {
 				return ErrMalformedSSE
 			}
+			refreshChoices()
+			if err := validateSSELogicalResponse(logical); err != nil {
+				return err
+			}
 			seenTerminal = true
 			event := SSEEvent{Raw: raw, Data: []byte("[DONE]"), Done: true}
 			if forward != nil {
@@ -147,17 +156,22 @@ func ReadSSEStream(reader io.Reader, limit int64, forward func(SSEEvent) error) 
 		} else if logical.ID != chunk.ID || logical.Model != chunk.Model {
 			return ErrMalformedSSE
 		}
+		seenChoiceIndices := make(map[int]struct{}, len(chunk.Choices))
 		for _, delta := range chunk.Choices {
 			if delta.Index < 0 {
 				return ErrMalformedSSE
 			}
+			if _, duplicate := seenChoiceIndices[delta.Index]; duplicate {
+				return ErrMalformedSSE
+			}
+			seenChoiceIndices[delta.Index] = struct{}{}
 			choice := choices[delta.Index]
 			if choice == nil {
 				choice = &SSELogicalChoice{Index: delta.Index}
 				choices[delta.Index] = choice
 			}
 			if delta.Delta.Role != "" {
-				if choice.Role != "" && choice.Role != delta.Delta.Role {
+				if delta.Delta.Role != string(MessageRoleAssistant) || choice.Role != "" && choice.Role != delta.Delta.Role {
 					return ErrMalformedSSE
 				}
 				choice.Role = delta.Delta.Role
@@ -166,12 +180,20 @@ func ReadSSEStream(reader io.Reader, limit int64, forward func(SSEEvent) error) 
 				choice.Content += *delta.Delta.Content
 			}
 			if delta.FinishReason != nil {
+				if choice.FinishReason != "" || !safeStreamFact(*delta.FinishReason) {
+					return ErrMalformedSSE
+				}
 				choice.FinishReason = *delta.FinishReason
 			}
+			seenToolCallIndices := make(map[int]struct{}, len(delta.Delta.ToolCalls))
 			for _, tool := range delta.Delta.ToolCalls {
 				if tool.Index < 0 {
 					return ErrMalformedSSE
 				}
+				if _, duplicate := seenToolCallIndices[tool.Index]; duplicate {
+					return ErrMalformedSSE
+				}
+				seenToolCallIndices[tool.Index] = struct{}{}
 				var target *SSELogicalToolCall
 				for i := range choice.ToolCalls {
 					if choice.ToolCalls[i].Index == tool.Index {
@@ -197,6 +219,9 @@ func ReadSSEStream(reader io.Reader, limit int64, forward func(SSEEvent) error) 
 				}
 				target.Function.Name += tool.Function.Name
 				target.Function.Arguments += tool.Function.Arguments
+				if !safeStreamFact(target.ID) || target.Type != "function" || !safeStreamFact(target.Function.Name) {
+					return ErrMalformedSSE
+				}
 			}
 		}
 		if chunk.Usage != nil {
@@ -243,6 +268,9 @@ func ReadSSEStream(reader io.Reader, limit int64, forward func(SSEEvent) error) 
 			if err := flush(); err != nil {
 				return logical, err
 			}
+			if seenTerminal {
+				return logical, nil
+			}
 		}
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
@@ -252,27 +280,36 @@ func ReadSSEStream(reader io.Reader, limit int64, forward func(SSEEvent) error) 
 				if err := flush(); err != nil {
 					return logical, err
 				}
+				if seenTerminal {
+					return logical, nil
+				}
 			}
 			break
 		}
 	}
-	if !seenTerminal {
-		return logical, ErrSSETerminal
-	}
-	if logical.ID == "" || logical.Model == "" || len(choices) == 0 {
-		return logical, ErrMalformedSSE
+	return logical, ErrSSETerminal
+}
+
+func validateSSELogicalResponse(logical SSELogicalResponse) error {
+	if logical.ID == "" || logical.Model == "" || len(logical.Choices) == 0 {
+		return ErrMalformedSSE
 	}
 	for _, choice := range logical.Choices {
 		if choice.Role != "assistant" || !safeStreamFact(choice.FinishReason) {
-			return logical, ErrMalformedSSE
+			return ErrMalformedSSE
 		}
+		seenToolCallIDs := make(map[string]struct{}, len(choice.ToolCalls))
 		for _, tool := range choice.ToolCalls {
 			if !safeStreamFact(tool.ID) || tool.Type != "function" || !safeStreamFact(tool.Function.Name) || !utf8.ValidString(tool.Function.Arguments) {
-				return logical, ErrMalformedSSE
+				return ErrMalformedSSE
 			}
+			if _, duplicate := seenToolCallIDs[tool.ID]; duplicate {
+				return ErrMalformedSSE
+			}
+			seenToolCallIDs[tool.ID] = struct{}{}
 		}
 	}
-	return logical, nil
+	return nil
 }
 
 func safeStreamFact(value string) bool {

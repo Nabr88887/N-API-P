@@ -116,16 +116,54 @@ func TestDecodeChatCompletionRequestRejectsMalformedTypedTools(t *testing.T) {
 
 func TestValidateChatCompletionResponseAcceptsAndRejectsTypedToolCalls(t *testing.T) {
 	valid := []byte(`{"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"x\"}"}}]},"finish_reason":"tool_calls"}]}`)
-	if ok, _ := validateChatCompletionResponse(valid); !ok {
+	if ok, _, _ := validateChatCompletionResponse(valid); !ok {
 		t.Fatal("valid typed tool response was rejected")
 	}
 	for _, body := range []string{
-		`{"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":{"q":"x"}}}]}}]}`,
-		`{"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"custom","function":{"name":"lookup","arguments":"{}"}}]}}]}`,
+		`{"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":{"q":"x"}}}]},"finish_reason":"tool_calls"}]}`,
+		`{"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"custom","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`,
 	} {
-		if ok, _ := validateChatCompletionResponse([]byte(body)); ok {
+		if ok, _, _ := validateChatCompletionResponse([]byte(body)); ok {
 			t.Fatalf("malformed typed tool response accepted: %s", body)
 		}
+	}
+}
+
+func TestValidateChatCompletionResponseRejectsAmbiguousChoicesAndFinishReasons(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{
+			name: "duplicate choice index",
+			body: `{"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"first"},"finish_reason":"stop"},{"index":0,"message":{"role":"assistant","content":"second"},"finish_reason":"stop"}]}`,
+		},
+		{
+			name: "missing finish reason",
+			body: `{"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"ok"}}]}`,
+		},
+		{
+			name: "unsafe finish reason",
+			body: `{"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop\nunsafe"}]}`,
+		},
+		{
+			name: "duplicate tool call id",
+			body: `{"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"first","arguments":"{}"}},{"id":"call_1","type":"function","function":{"name":"second","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`,
+		},
+		{
+			name: "missing logical message content",
+			body: `{"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":null},"finish_reason":"stop"}]}`,
+		},
+		{
+			name: "duplicate JSON field",
+			body: `{"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"index":1,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if ok, _, _ := validateChatCompletionResponse([]byte(test.body)); ok {
+				t.Fatalf("ambiguous upstream response accepted: %s", test.body)
+			}
+		})
 	}
 }
 
@@ -172,6 +210,16 @@ func TestDecodeChatCompletionRequestRejectsUnknownFields(t *testing.T) {
 			_, err := DecodeChatCompletionRequest([]byte(test.body))
 			assertContractError(t, err)
 		})
+	}
+}
+
+func TestDecodeChatCompletionRequestRejectsDuplicateFields(t *testing.T) {
+	for _, body := range []string{
+		`{"model":"gpt-allowed","model":"gpt-denied","messages":[{"role":"user","content":"hi"}]}`,
+		`{"model":"gpt-allowed","messages":[{"role":"user","role":"assistant","content":"hi"}]}`,
+	} {
+		_, err := DecodeChatCompletionRequest([]byte(body))
+		assertContractError(t, err)
 	}
 }
 

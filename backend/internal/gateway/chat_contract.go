@@ -423,6 +423,9 @@ func DecodeModelListResponse(data []byte) (ModelListResponse, error) {
 }
 
 func decodeJSON(data []byte, destination any, rejectUnknown bool) error {
+	if !uniqueJSONFields(data) {
+		return errors.New("JSON contains duplicate or invalid fields")
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	if rejectUnknown {
 		decoder.DisallowUnknownFields()
@@ -434,4 +437,58 @@ func decodeJSON(data []byte, destination any, rejectUnknown bool) error {
 		return errors.New("JSON contains trailing content")
 	}
 	return nil
+}
+
+func uniqueJSONFields(data []byte) bool {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if !scanUniqueJSONValue(decoder, 0) {
+		return false
+	}
+	_, err := decoder.Token()
+	return errors.Is(err, io.EOF)
+}
+
+func scanUniqueJSONValue(decoder *json.Decoder, depth int) bool {
+	if depth > 128 {
+		return false
+	}
+	token, err := decoder.Token()
+	if err != nil {
+		return false
+	}
+	delimiter, container := token.(json.Delim)
+	if !container {
+		return true
+	}
+	switch delimiter {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			key, ok := keyToken.(string)
+			if err != nil || !ok {
+				return false
+			}
+			if _, duplicate := seen[key]; duplicate {
+				return false
+			}
+			seen[key] = struct{}{}
+			if !scanUniqueJSONValue(decoder, depth+1) {
+				return false
+			}
+		}
+		closing, err := decoder.Token()
+		return err == nil && closing == json.Delim('}')
+	case '[':
+		for decoder.More() {
+			if !scanUniqueJSONValue(decoder, depth+1) {
+				return false
+			}
+		}
+		closing, err := decoder.Token()
+		return err == nil && closing == json.Delim(']')
+	default:
+		return false
+	}
 }

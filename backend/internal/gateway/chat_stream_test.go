@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"n-api-p/internal/audit"
+	"n-api-p/internal/httpapi"
 	"n-api-p/internal/usage"
 )
 
@@ -81,6 +82,32 @@ func TestChatProxyHandlerPreservesStructuredUpstreamErrorForStreamRequest(t *tes
 	handler.ServeHTTP(recorder, streamProxyRequest(t, "stream-upstream-error"))
 	if recorder.Code != http.StatusServiceUnavailable || recorder.Body.String() != errorBody || finalizer.input.CaptureStatus != audit.CaptureStatusComplete || finalizer.input.Outcome != audit.AuditOutcomeUpstreamError || finalizer.input.ErrorCode != "UPSTREAM_BUSY" {
 		t.Fatalf("response/finalization = %d/%q/%+v", recorder.Code, recorder.Body.String(), finalizer.input)
+	}
+}
+
+func TestChatProxyHandlerCapturesMalformedUpstreamErrorForStreamRequest(t *testing.T) {
+	errorBody := []byte(`not-json`)
+	upstream := &fakeChatUpstream{streamResponse: &NewAPIResponse{StatusCode: http.StatusBadGateway, ContentType: "application/json", RequestID: "upstream-malformed", Body: io.NopCloser(bytes.NewReader(errorBody))}}
+	finalizer := &fakeResponseFinalizer{}
+	handler := newTestChatProxyHandler(t, upstream, &fakeInitialCapture{receipt: audit.CaptureReceipt{AuditID: "generated-id", RequestID: "stream-malformed-error"}}, finalizer, &fakeUsageRepository{}, nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, streamProxyRequest(t, "stream-malformed-error"))
+
+	if recorder.Code != http.StatusBadGateway || finalizer.input.CaptureStatus != audit.CaptureStatusComplete || finalizer.input.Outcome != audit.AuditOutcomeUpstreamError || finalizer.input.ErrorCode != string(httpapi.CodeUpstreamError) || !bytes.Equal(finalizer.input.ResponseJSON, errorBody) {
+		t.Fatalf("response/finalization = %d/%+v, want complete captured upstream error", recorder.Code, finalizer.input)
+	}
+}
+
+func TestChatProxyHandlerTruncatesOversizedUpstreamErrorForStreamRequest(t *testing.T) {
+	errorBody := bytes.Repeat([]byte("x"), 4*1024*1024+1)
+	upstream := &fakeChatUpstream{streamResponse: &NewAPIResponse{StatusCode: http.StatusBadGateway, ContentType: "application/json", RequestID: "upstream-oversized", Body: io.NopCloser(bytes.NewReader(errorBody))}}
+	finalizer := &fakeResponseFinalizer{}
+	handler := newTestChatProxyHandler(t, upstream, &fakeInitialCapture{receipt: audit.CaptureReceipt{AuditID: "generated-id", RequestID: "stream-oversized-error"}}, finalizer, &fakeUsageRepository{}, nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, streamProxyRequest(t, "stream-oversized-error"))
+
+	if recorder.Code != http.StatusBadGateway || finalizer.input.CaptureStatus != audit.CaptureStatusTruncated || finalizer.input.Outcome != audit.AuditOutcomeLocalError || finalizer.input.ErrorCode != string(httpapi.CodeUpstreamResponseTooLarge) || len(finalizer.input.ResponseJSON) != 4*1024*1024 || finalizer.input.ObservedResponseBytes != 4*1024*1024+1 {
+		t.Fatalf("response/finalization = %d/%+v, want bounded truncated upstream error", recorder.Code, finalizer.input)
 	}
 }
 
