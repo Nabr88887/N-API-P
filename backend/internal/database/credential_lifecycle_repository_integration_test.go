@@ -131,7 +131,7 @@ func TestCredentialLifecycleEventFailureRollsBackRevocationAndOffboarding(t *tes
 
 	offboarding := access.NewOffboardingService(repository)
 	if err := offboarding.DisableEmployee(context.Background(), access.DisableEmployeeInput{
-		Actor:      access.Actor{IdentityID: accessAdminID, Role: access.RoleSystemAdministrator},
+		Actor:      reauthenticatedSystemAdministrator(accessAdminID),
 		IdentityID: accessEmployeeID,
 		RequestID:  "87000000-0000-0000-0000-000000000108",
 	}); err == nil {

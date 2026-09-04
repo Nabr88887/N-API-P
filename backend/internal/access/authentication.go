@@ -16,8 +16,8 @@ const (
 	loginFailureLimit       = 5
 	loginFailureWindow      = 15 * time.Minute
 	loginLockDuration       = 15 * time.Minute
-	unknownLoginStateLimit  = 4096
-	unknownLoginCleanupWait = time.Minute
+	loginAttemptStateLimit  = 4096
+	loginAttemptCleanupWait = time.Minute
 	sessionRandomBytes      = 32
 	sessionIdleLifetime     = 30 * time.Minute
 	sessionAbsoluteLifetime = 12 * time.Hour
@@ -89,40 +89,51 @@ type PortalSession struct {
 	ExpiresAt  time.Time
 }
 
-type unknownLoginLimiter struct {
+type loginAttemptLimiter struct {
 	mu            sync.Mutex
-	states        map[string]unknownLoginState
+	states        map[string]loginAttemptState
 	nextCleanupAt time.Time
 }
 
-type unknownLoginState struct {
+type loginAttemptState struct {
 	windowStartedAt time.Time
 	attempts        int
+	known           bool
 }
 
-func newUnknownLoginLimiter() *unknownLoginLimiter {
-	return &unknownLoginLimiter{states: make(map[string]unknownLoginState)}
+func newLoginAttemptLimiter() *loginAttemptLimiter {
+	return &loginAttemptLimiter{states: make(map[string]loginAttemptState)}
 }
 
-func (limiter *unknownLoginLimiter) allow(email string, now time.Time) bool {
+func (limiter *loginAttemptLimiter) allow(email string, known bool, now time.Time) bool {
 	limiter.mu.Lock()
 	defer limiter.mu.Unlock()
 	state, exists := limiter.states[email]
-	if !exists && len(limiter.states) >= unknownLoginStateLimit {
+	if !exists && len(limiter.states) >= loginAttemptStateLimit {
 		if limiter.nextCleanupAt.IsZero() || !now.Before(limiter.nextCleanupAt) {
 			for key, candidate := range limiter.states {
 				if !now.Before(candidate.windowStartedAt.Add(loginFailureWindow)) {
 					delete(limiter.states, key)
 				}
 			}
-			limiter.nextCleanupAt = now.Add(unknownLoginCleanupWait)
+			limiter.nextCleanupAt = now.Add(loginAttemptCleanupWait)
 		}
-		if len(limiter.states) >= unknownLoginStateLimit {
+		if known && len(limiter.states) >= loginAttemptStateLimit {
+			for key, candidate := range limiter.states {
+				if !candidate.known {
+					delete(limiter.states, key)
+					break
+				}
+			}
+		}
+		if len(limiter.states) >= loginAttemptStateLimit {
 			return false
 		}
 	}
 	if state.windowStartedAt.IsZero() || !now.Before(state.windowStartedAt.Add(loginFailureWindow)) {
-		state = unknownLoginState{windowStartedAt: now, attempts: 0}
+		state = loginAttemptState{windowStartedAt: now, known: known}
+	} else if known {
+		state.known = true
 	}
 	if state.attempts >= loginFailureLimit {
 		limiter.states[email] = state
@@ -133,11 +144,17 @@ func (limiter *unknownLoginLimiter) allow(email string, now time.Time) bool {
 	return true
 }
 
+func (limiter *loginAttemptLimiter) reset(email string) {
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+	delete(limiter.states, email)
+}
+
 type AuthenticationService struct {
 	repository AuthenticationRepository
 	passwords  PasswordCodec
 	dummyHash  string
-	limiter    *unknownLoginLimiter
+	limiter    *loginAttemptLimiter
 	now        func() time.Time
 	random     io.Reader
 	newID      func() (string, error)
@@ -155,7 +172,7 @@ func NewAuthenticationService(repository AuthenticationRepository, passwords Pas
 		repository: repository,
 		passwords:  passwords,
 		dummyHash:  dummyHash,
-		limiter:    newUnknownLoginLimiter(),
+		limiter:    newLoginAttemptLimiter(),
 		now:        time.Now,
 		random:     rand.Reader,
 		newID:      newIdentityID,
@@ -169,13 +186,12 @@ func (service *AuthenticationService) Login(ctx context.Context, input LoginInpu
 	if err != nil {
 		return PortalSession{}, ErrAuthenticationUnavailable
 	}
+	if !service.limiter.allow(email, candidate.Found, now) {
+		return PortalSession{}, ErrInvalidCredentials
+	}
 
 	eligible := candidate.Found && candidate.Status == IdentityStatusActive && candidate.PasswordHash != "" &&
 		(candidate.LockedUntil == nil || !candidate.LockedUntil.After(now))
-	unknownAllowed := true
-	if !candidate.Found {
-		unknownAllowed = service.limiter.allow(email, now)
-	}
 	verifyHash := service.dummyHash
 	if eligible {
 		verifyHash = candidate.PasswordHash
@@ -184,7 +200,7 @@ func (service *AuthenticationService) Login(ctx context.Context, input LoginInpu
 	if err != nil {
 		return PortalSession{}, ErrAuthenticationUnavailable
 	}
-	if !valid || !eligible || !unknownAllowed {
+	if !valid || !eligible {
 		if candidate.Found && eligible {
 			err = service.repository.CompleteLogin(ctx, LoginCompletion{
 				Candidate: candidate, AttemptedAt: now, VerifiedPasswordHash: candidate.PasswordHash,
@@ -213,6 +229,7 @@ func (service *AuthenticationService) Login(ctx context.Context, input LoginInpu
 	if err != nil {
 		return PortalSession{}, ErrAuthenticationUnavailable
 	}
+	service.limiter.reset(email)
 	return session, nil
 }
 

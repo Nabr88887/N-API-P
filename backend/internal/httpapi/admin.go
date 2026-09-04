@@ -1067,7 +1067,7 @@ func requireSystemAdministrator(writer http.ResponseWriter, request *http.Reques
 }
 
 func adminActor(session access.ActivePortalSession) access.Actor {
-	return access.Actor{IdentityID: session.IdentityID, Role: session.Role}
+	return access.Actor{IdentityID: session.IdentityID, Role: session.Role, ReauthenticatedUntil: session.ReauthenticatedUntil}
 }
 
 func adminRequestID(request *http.Request) string {
@@ -1163,6 +1163,8 @@ func writeAdminError(writer http.ResponseWriter, err error) {
 		writeErrorResponse(writer, CodeForbidden)
 	case errors.Is(err, access.ErrReauthenticationRequired):
 		writeErrorResponse(writer, CodeReauthenticationRequired)
+	case errors.Is(err, access.ErrSecurityAuditUnavailable):
+		writeErrorResponse(writer, CodeAuditUnavailable)
 	case errors.Is(err, access.ErrInvalidInvitation),
 		errors.Is(err, access.ErrInvalidEmailChange),
 		errors.Is(err, access.ErrManualIdentityVerificationRequired),

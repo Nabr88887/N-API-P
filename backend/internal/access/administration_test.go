@@ -34,7 +34,7 @@ func TestAdministrationServiceCarriesAuditableRoleAndMembershipChanges(t *testin
 	service := NewAdministrationService(repository)
 	service.now = func() time.Time { return fixedNow }
 	service.newID = func() (string, error) { return "event-1", nil }
-	actor := Actor{IdentityID: "admin-1", Role: RoleSystemAdministrator}
+	actor := Actor{IdentityID: "admin-1", Role: RoleSystemAdministrator, ReauthenticatedUntil: timePointer(fixedNow.Add(time.Minute))}
 
 	if err := service.ChangeRole(context.Background(), ChangeRoleInput{Actor: actor, IdentityID: "user-1", Role: RoleTeamAdministrator, RequestID: "request-role"}); err != nil {
 		t.Fatalf("ChangeRole() error = %v", err)
@@ -54,6 +54,64 @@ func TestAdministrationServiceCarriesAuditableRoleAndMembershipChanges(t *testin
 	}
 	if repository.membershipChange.Operation != MembershipRemoved || repository.membershipChange.RequestID != "request-remove" {
 		t.Fatalf("remove membership = %#v", repository.membershipChange)
+	}
+}
+
+func TestAdministrationSensitiveChangesRequireRecentReauthentication(t *testing.T) {
+	tests := []struct {
+		name      string
+		operation func(*AdministrationService, Actor) error
+		eventType string
+		reason    string
+	}{
+		{
+			name: "role change",
+			operation: func(service *AdministrationService, actor Actor) error {
+				return service.ChangeRole(context.Background(), ChangeRoleInput{Actor: actor, IdentityID: "user-1", Role: RoleTeamAdministrator, RequestID: "request-role"})
+			},
+			eventType: "role_change",
+		},
+		{
+			name: "membership addition",
+			operation: func(service *AdministrationService, actor Actor) error {
+				return service.AddMembership(context.Background(), ChangeMembershipInput{Actor: actor, IdentityID: "user-1", TeamID: "team-1", RequestID: "request-add"})
+			},
+			eventType: "team_change",
+			reason:    "team-1",
+		},
+		{
+			name: "membership removal",
+			operation: func(service *AdministrationService, actor Actor) error {
+				return service.RemoveMembership(context.Background(), ChangeMembershipInput{Actor: actor, IdentityID: "user-1", TeamID: "team-1", RequestID: "request-remove"})
+			},
+			eventType: "team_change",
+			reason:    "team-1",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository := &administrationRepositoryFake{}
+			service := NewAdministrationService(repository)
+			service.now = func() time.Time { return fixedNow }
+			service.newID = func() (string, error) { return "event-denied", nil }
+
+			err := test.operation(service, Actor{IdentityID: "admin-1", Role: RoleSystemAdministrator})
+
+			if !errors.Is(err, ErrReauthenticationRequired) {
+				t.Fatalf("operation error = %v, want ErrReauthenticationRequired", err)
+			}
+			if repository.roleChange != (RoleChange{}) || repository.membershipChange != (MembershipChange{}) {
+				t.Fatalf("sensitive mutation reached repository: role=%#v membership=%#v", repository.roleChange, repository.membershipChange)
+			}
+			if len(repository.events) != 1 {
+				t.Fatalf("security events = %d, want 1", len(repository.events))
+			}
+			event := repository.events[0]
+			if event.EventType != test.eventType || event.TargetIdentityID != "user-1" || event.Reason != test.reason || event.Outcome != SecurityEventDenied || event.DetailCode != "reauthentication_required" {
+				t.Fatalf("denied security event = %#v", event)
+			}
+		})
 	}
 }
 
@@ -120,6 +178,7 @@ type administrationRepositoryFake struct {
 	serviceAccount   ServiceAccount
 	resourceActor    string
 	teamChange       TeamChange
+	events           []SecurityEvent
 }
 
 func (repository *administrationRepositoryFake) ListAdministrationAccounts(_ context.Context, filter AdministrationAccountFilter) (AdministrationAccountPage, error) {
@@ -181,5 +240,10 @@ func (repository *administrationRepositoryFake) ChangeIdentityRole(_ context.Con
 func (repository *administrationRepositoryFake) ChangeMembership(_ context.Context, change MembershipChange) error {
 	repository.calls++
 	repository.membershipChange = change
+	return nil
+}
+
+func (repository *administrationRepositoryFake) AppendSecurityEvent(_ context.Context, event SecurityEvent) error {
+	repository.events = append(repository.events, event)
 	return nil
 }

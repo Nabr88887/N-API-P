@@ -286,7 +286,7 @@ func TestIdentityEmailChangePreservesImmutableIDAndOwnership(t *testing.T) {
 	service.now = func() time.Time { return fixedNow }
 
 	err := service.ChangeEmail(context.Background(), ChangeEmailInput{
-		Actor:      Actor{IdentityID: "admin-1", Role: RoleSystemAdministrator},
+		Actor:      Actor{IdentityID: "admin-1", Role: RoleSystemAdministrator, ReauthenticatedUntil: timePointer(fixedNow.Add(time.Minute))},
 		IdentityID: identityID,
 		Email:      " New.Address@Example.Internal ",
 	})
@@ -316,7 +316,7 @@ func TestIdentityEmailChangeRejectsPendingWithoutRevokingActivation(t *testing.T
 	service.now = func() time.Time { return fixedNow }
 
 	err := service.ChangeEmail(context.Background(), ChangeEmailInput{
-		Actor:      Actor{IdentityID: "admin-1", Role: RoleSystemAdministrator},
+		Actor:      Actor{IdentityID: "admin-1", Role: RoleSystemAdministrator, ReauthenticatedUntil: timePointer(fixedNow.Add(time.Minute))},
 		IdentityID: identityID,
 		Email:      "new.address@example.internal",
 	})
@@ -373,6 +373,7 @@ type memoryAccessRepository struct {
 	ownedResources  map[string][]string
 	activation      ActivationRecord
 	createErr       error
+	events          []SecurityEvent
 }
 
 func newMemoryAccessRepository() *memoryAccessRepository {
@@ -463,6 +464,11 @@ func (repository *memoryAccessRepository) ChangeIdentityEmail(_ context.Context,
 			code.RevokedAt = timePointer(record.ChangedAt)
 		}
 	}
+	return nil
+}
+
+func (repository *memoryAccessRepository) AppendSecurityEvent(_ context.Context, event SecurityEvent) error {
+	repository.events = append(repository.events, event)
 	return nil
 }
 

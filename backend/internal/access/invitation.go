@@ -45,8 +45,9 @@ const (
 )
 
 type Actor struct {
-	IdentityID string
-	Role       Role
+	IdentityID           string
+	Role                 Role
+	ReauthenticatedUntil *time.Time
 }
 
 type CreateInvitationInput struct {
@@ -318,6 +319,7 @@ type EmailChangeRecord struct {
 // IdentityRepository updates an identity by immutable ID and atomically
 // revokes unused activation values still bound to its previous email.
 type IdentityRepository interface {
+	SecurityEventWriter
 	ChangeIdentityEmail(context.Context, EmailChangeRecord) error
 }
 
@@ -350,6 +352,12 @@ func (service *IdentityService) ChangeEmail(ctx context.Context, input ChangeEma
 		return ErrInvalidEmailChange
 	}
 	changedAt := service.now().UTC()
+	if err := requireRecentActorReauthentication(ctx, service.repository, input.Actor, SecurityEvent{
+		ID: eventID, EventType: "email_change", TargetIdentityID: input.IdentityID,
+		RequestID: requestID, OccurredAt: changedAt,
+	}, changedAt); err != nil {
+		return err
+	}
 
 	err = service.repository.ChangeIdentityEmail(ctx, EmailChangeRecord{
 		IdentityID:          input.IdentityID,

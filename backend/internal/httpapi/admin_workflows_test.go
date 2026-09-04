@@ -15,6 +15,12 @@ import (
 
 var adminWorkflowNow = time.Date(2026, time.August, 12, 9, 0, 0, 0, time.UTC)
 
+func TestWriteAdminErrorMapsAuditUnavailable(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	writeAdminError(recorder, access.ErrSecurityAuditUnavailable)
+	assertHTTPError(t, recorder, http.StatusServiceUnavailable, CodeAuditUnavailable)
+}
+
 func TestAdminInvitationHandlerReturnsOneTimeActivationValue(t *testing.T) {
 	service := &fakeAdminInvitationService{invitation: access.Invitation{
 		IdentityID: "10000000-0000-0000-0000-000000000001",
@@ -51,7 +57,8 @@ func TestAdminInvitationHandlerRejectsTeamAdministrator(t *testing.T) {
 }
 
 func TestAdminPortalRouterRegistersDeclaredAdministrationResourceRoutes(t *testing.T) {
-	session := access.ActivePortalSession{IdentityID: "20000000-0000-0000-0000-000000000001", Role: access.RoleSystemAdministrator}
+	grantUntil := time.Now().UTC().Add(time.Minute)
+	session := access.ActivePortalSession{IdentityID: "20000000-0000-0000-0000-000000000001", Role: access.RoleSystemAdministrator, ReauthenticatedUntil: &grantUntil}
 	sessions := &fakePortalSessions{session: session}
 	invitations := &fakeAdminInvitationService{}
 	administration := &fakeAdministrationService{
@@ -248,7 +255,8 @@ func TestAdminServiceKeyRevokeRequiresConfirmation(t *testing.T) {
 
 func TestAdminAccountListPassesBoundedFiltersAndRoleChangeRequestID(t *testing.T) {
 	service := &fakeAdministrationService{accountPage: access.AdministrationAccountPage{Accounts: []access.AdministrationAccount{{ID: "10000000-0000-0000-0000-000000000001", Email: "member@example.internal", Role: access.RoleEmployee, Status: access.IdentityStatusActive, CreatedAt: time.Now().UTC()}}, NextCursor: "next-page"}}
-	session := access.ActivePortalSession{IdentityID: "20000000-0000-0000-0000-000000000001", Role: access.RoleSystemAdministrator}
+	grantUntil := time.Now().UTC().Add(time.Minute)
+	session := access.ActivePortalSession{IdentityID: "20000000-0000-0000-0000-000000000001", Role: access.RoleSystemAdministrator, ReauthenticatedUntil: &grantUntil}
 	handler := withEmployeeSession(NewAdminAccountListHandler(service), session)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/users?limit=1&status=active&role=employee", nil))
@@ -265,7 +273,7 @@ func TestAdminAccountListPassesBoundedFiltersAndRoleChangeRequestID(t *testing.T
 	request := httptest.NewRequest(http.MethodPatch, "/api/v1/users/10000000-0000-0000-0000-000000000001", bytes.NewBufferString(`{"role":"team_administrator","confirmed":true}`))
 	request.Header.Set("X-Request-ID", "30000000-0000-0000-0000-000000000001")
 	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusNoContent || service.roleInput.Role != access.RoleTeamAdministrator || service.roleInput.RequestID != "30000000-0000-0000-0000-000000000001" {
+	if recorder.Code != http.StatusNoContent || service.roleInput.Role != access.RoleTeamAdministrator || service.roleInput.RequestID != "30000000-0000-0000-0000-000000000001" || service.roleInput.Actor.ReauthenticatedUntil != &grantUntil {
 		t.Fatalf("role response/input = %d / %#v", recorder.Code, service.roleInput)
 	}
 }

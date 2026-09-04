@@ -143,6 +143,14 @@ export function SystemAdminWorkspace({ section, client }: Props) {
     finally { setMutationPending(false) }
   }
 
+	function deferSensitiveAction(reason: unknown, action: () => Promise<void>): boolean {
+		if (errorCode(reason) !== 'REAUTHENTICATION_REQUIRED') return false
+		pendingSensitiveAction.current = action
+		setConfirmation(null)
+		setReauthOpen(true)
+		return true
+	}
+
   async function createGroupKey(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!keyService || !keyName.trim()) return
     if (mutationPending) return
@@ -214,7 +222,8 @@ export function SystemAdminWorkspace({ section, client }: Props) {
 		try { await client.disableServiceAccount(account.id)
 		setServices((current) => current.map((item) => item.id === account.id ? { ...item, status: 'disabled' as const } : item))
 		setConfirmation(null)
-		} finally { setMutationPending(false) }
+		} catch (reason: unknown) { if (!deferSensitiveAction(reason, () => disableServiceAccount(account))) { setConfirmation(null); setError('Unable to disable this service account.') } }
+		finally { setMutationPending(false) }
 	}
 
 	function manageAccess(account: Account) {
@@ -229,8 +238,8 @@ export function SystemAdminWorkspace({ section, client }: Props) {
       await client.updateAccount(accessTarget.id, { email: accessEmail.trim() })
       setAccessTarget((current) => current ? { ...current, email: accessEmail.trim() } : current)
       setAccounts((current) => current.map((account) => account.id === accessTarget.id ? { ...account, email: accessEmail.trim() } : account))
-    } catch {
-      setAccessError('Unable to update this email.')
+		} catch (reason: unknown) {
+			if (!deferSensitiveAction(reason, updateEmail)) setAccessError('Unable to update this email.')
     } finally {
       setMutationPending(false)
     }
@@ -242,8 +251,9 @@ export function SystemAdminWorkspace({ section, client }: Props) {
     try {
     await client.updateAccount(accessTarget.id, { role: accessRole, confirmed: true })
     setAccounts((current) => current.map((account) => account.id === accessTarget.id ? { ...account, role: accessRole } : account))
-    setConfirmation(null)
-    } finally { setMutationPending(false) }
+		setConfirmation(null)
+		} catch (reason: unknown) { if (!deferSensitiveAction(reason, applyRole)) { setConfirmation(null); setAccessError('Unable to update this role.') } }
+		finally { setMutationPending(false) }
   }
 
   async function addMembership() {
@@ -253,8 +263,9 @@ export function SystemAdminWorkspace({ section, client }: Props) {
     await client.addMember(accessTeam, accessTarget.id)
     setAccounts((current) => current.map((account) => account.id === accessTarget.id ? { ...account, team_ids: Array.from(new Set([...(account.team_ids ?? []), accessTeam])) } : account))
     setAccessTarget((current) => current ? { ...current, team_ids: Array.from(new Set([...(current.team_ids ?? []), accessTeam])) } : current)
-    setTeams((current) => current.map((team) => team.id === accessTeam ? { ...team, member_count: team.member_count + 1 } : team))
-    } finally { setMutationPending(false) }
+		setTeams((current) => current.map((team) => team.id === accessTeam ? { ...team, member_count: team.member_count + 1 } : team))
+		} catch (reason: unknown) { if (!deferSensitiveAction(reason, addMembership)) setAccessError('Unable to add this membership.') }
+		finally { setMutationPending(false) }
   }
 
   async function removeMembership() {
@@ -265,8 +276,9 @@ export function SystemAdminWorkspace({ section, client }: Props) {
     setAccounts((current) => current.map((account) => account.id === accessTarget.id ? { ...account, team_ids: account.team_ids?.filter((id) => id !== accessTeam) } : account))
     setAccessTarget((current) => current ? { ...current, team_ids: current.team_ids?.filter((id) => id !== accessTeam) } : current)
     setTeams((current) => current.map((team) => team.id === accessTeam ? { ...team, member_count: Math.max(0, team.member_count - 1) } : team))
-    setConfirmation(null)
-    } finally { setMutationPending(false) }
+		setConfirmation(null)
+		} catch (reason: unknown) { if (!deferSensitiveAction(reason, removeMembership)) { setConfirmation(null); setAccessError('Unable to remove this membership.') } }
+		finally { setMutationPending(false) }
   }
 
   async function disableAccount() {
@@ -275,8 +287,9 @@ export function SystemAdminWorkspace({ section, client }: Props) {
     try {
     await client.updateAccount(accessTarget.id, { status: 'disabled', confirmed: true })
     setAccounts((current) => current.map((account) => account.id === accessTarget.id ? { ...account, status: 'disabled' as const } : account))
-    setConfirmation(null); setAccessTarget(null)
-    } finally { setMutationPending(false) }
+		setConfirmation(null); setAccessTarget(null)
+		} catch (reason: unknown) { if (!deferSensitiveAction(reason, disableAccount)) { setConfirmation(null); setAccessError('Unable to disable this account.') } }
+		finally { setMutationPending(false) }
   }
 
 	async function disableTeam(team: Team) {
@@ -285,7 +298,8 @@ export function SystemAdminWorkspace({ section, client }: Props) {
 		try { await client.disableTeam(team.id)
 		setTeams((current) => current.map((item) => item.id === team.id ? { ...item, status: 'disabled' as const } : item))
 		setConfirmation(null)
-		} finally { setMutationPending(false) }
+		} catch (reason: unknown) { if (!deferSensitiveAction(reason, () => disableTeam(team))) { setConfirmation(null); setError('Unable to disable this team.') } }
+		finally { setMutationPending(false) }
 	}
 
   async function saveModels() {

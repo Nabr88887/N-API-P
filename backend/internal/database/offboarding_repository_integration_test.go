@@ -25,7 +25,7 @@ func TestOffboardingRepositoryDisablesEmployeeAndRevokesOwnedCredentials(t *test
 	mustExec(t, db, `INSERT INTO memberships (identity_id, team_id) VALUES ($1, $2)`, accessEmployeeID, accessTeamID)
 	seedOffboardingOtherEmployee(t, db, accessTeamID)
 	repository := NewRepository(db)
-	actor := access.Actor{IdentityID: accessAdminID, Role: access.RoleSystemAdministrator}
+	actor := reauthenticatedSystemAdministrator(accessAdminID)
 
 	targetPersonal, targetPersonalSecret := createOffboardingPersonalKey(t, repository, accessEmployeeID, "target-personal")
 	otherPersonal, otherPersonalSecret := createOffboardingPersonalKey(t, repository, offboardingOtherEmployeeID, "other-personal")
@@ -69,7 +69,7 @@ func TestOffboardingRepositoryDisablesTeamWithinItsCredentialBoundary(t *testing
 	mustExec(t, db, `INSERT INTO teams (id, name, status) VALUES ($1, 'Other', 'active')`, offboardingOtherTeamID)
 	mustExec(t, db, `INSERT INTO memberships (identity_id, team_id) VALUES ($1, $2)`, accessEmployeeID, offboardingOtherTeamID)
 	repository := NewRepository(db)
-	actor := access.Actor{IdentityID: accessAdminID, Role: access.RoleSystemAdministrator}
+	actor := reauthenticatedSystemAdministrator(accessAdminID)
 
 	personal, personalSecret := createOffboardingPersonalKey(t, repository, accessEmployeeID, "team-personal")
 	_, targetKey, targetSecret := createOffboardingServiceKey(t, repository, actor, accessTeamID, accessEmployeeID, "team-target")
@@ -110,7 +110,7 @@ func TestOffboardingRepositoryRollsBackTeamWhenFinalSecurityEventFails(t *testin
 	seedAccessOwners(t, db)
 	mustExec(t, db, `INSERT INTO memberships (identity_id, team_id) VALUES ($1, $2)`, accessEmployeeID, accessTeamID)
 	repository := NewRepository(db)
-	actor := access.Actor{IdentityID: accessAdminID, Role: access.RoleSystemAdministrator}
+	actor := reauthenticatedSystemAdministrator(accessAdminID)
 	_, targetKey, targetSecret := createOffboardingServiceKey(t, repository, actor, accessTeamID, accessEmployeeID, "team-event-rollback")
 	mustExec(t, db, `CREATE FUNCTION reject_team_disabled_event() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.event_type = 'team_disabled' THEN RAISE EXCEPTION 'synthetic team disable event failure'; END IF; RETURN NEW; END $$`)
 	mustExec(t, db, `CREATE TRIGGER reject_team_disabled_event BEFORE INSERT ON security_events FOR EACH ROW EXECUTE FUNCTION reject_team_disabled_event()`)
@@ -139,7 +139,7 @@ func TestOffboardingRepositoryDisablesOnlyTargetServiceAccount(t *testing.T) {
 	seedAccessOwners(t, db)
 	mustExec(t, db, `INSERT INTO memberships (identity_id, team_id) VALUES ($1, $2)`, accessEmployeeID, accessTeamID)
 	repository := NewRepository(db)
-	actor := access.Actor{IdentityID: accessAdminID, Role: access.RoleSystemAdministrator}
+	actor := reauthenticatedSystemAdministrator(accessAdminID)
 
 	personal, personalSecret := createOffboardingPersonalKey(t, repository, accessEmployeeID, "service-personal")
 	targetAccount, targetKey, targetSecret := createOffboardingServiceKey(t, repository, actor, accessTeamID, accessEmployeeID, "service-target")
@@ -176,13 +176,13 @@ func TestOffboardingRepositoryRejectsUntrustedAdministratorAndRollsBackCascades(
 	repository := NewRepository(db)
 	service := access.NewOffboardingService(repository)
 
-	forged := access.Actor{IdentityID: accessEmployeeID, Role: access.RoleSystemAdministrator}
+	forged := reauthenticatedSystemAdministrator(accessEmployeeID)
 	if err := service.DisableEmployee(context.Background(), access.DisableEmployeeInput{Actor: forged, IdentityID: offboardingOtherEmployeeID}); !errors.Is(err, access.ErrForbidden) {
 		t.Fatalf("forged administrator DisableEmployee() error = %v, want ErrForbidden", err)
 	}
 	assertOffboardingIdentityStatus(t, db, offboardingOtherEmployeeID, "active")
 
-	actor := access.Actor{IdentityID: accessAdminID, Role: access.RoleSystemAdministrator}
+	actor := reauthenticatedSystemAdministrator(accessAdminID)
 	if err := service.DisableEmployee(context.Background(), access.DisableEmployeeInput{Actor: actor, IdentityID: accessAdminID}); !errors.Is(err, access.ErrInvalidOffboardingTarget) {
 		t.Fatalf("administrator target DisableEmployee() error = %v, want ErrInvalidOffboardingTarget", err)
 	}

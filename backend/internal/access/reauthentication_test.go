@@ -122,6 +122,22 @@ func TestSensitiveActionGuardRejectsStaleGrantAndAuditFailure(t *testing.T) {
 	}
 }
 
+func TestRequireRecentActorReauthenticationFailsClosedWhenDeniedAuditIsUnavailable(t *testing.T) {
+	events := &memorySecurityEventWriter{err: errors.New("audit unavailable")}
+	err := requireRecentActorReauthentication(context.Background(), events, Actor{
+		IdentityID: "admin-1", Role: RoleSystemAdministrator,
+	}, SecurityEvent{
+		ID: "event-1", EventType: "role_change", TargetIdentityID: "employee-1", RequestID: "request-1", OccurredAt: fixedNow,
+	}, fixedNow)
+
+	if !errors.Is(err, ErrSecurityAuditUnavailable) {
+		t.Fatalf("denied audit failure error = %v, want ErrSecurityAuditUnavailable", err)
+	}
+	if len(events.events) != 1 || events.events[0].Outcome != SecurityEventDenied || events.events[0].DetailCode != "reauthentication_required" {
+		t.Fatalf("attempted denied security event = %#v", events.events)
+	}
+}
+
 func TestSensitiveActionGuardExecutesBeforeAuditingFinalOutcome(t *testing.T) {
 	events := &memorySecurityEventWriter{}
 	guard := NewSensitiveActionGuard(events)

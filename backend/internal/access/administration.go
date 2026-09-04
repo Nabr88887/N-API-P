@@ -198,6 +198,7 @@ type ChangeMembershipInput struct {
 }
 
 type AdministrationRepository interface {
+	SecurityEventWriter
 	ListAdministrationInvitations(context.Context, AdministrationInvitationFilter) (AdministrationInvitationPage, error)
 	ListAdministrationAccounts(context.Context, AdministrationAccountFilter) (AdministrationAccountPage, error)
 	ListAdministrationTeams(context.Context, AdministrationTeamFilter) (AdministrationTeamPage, error)
@@ -401,9 +402,16 @@ func (service *AdministrationService) ChangeRole(ctx context.Context, input Chan
 	if err != nil {
 		return ErrInvalidAdministrationRequest
 	}
+	changedAt := service.now().UTC()
+	if err := requireRecentActorReauthentication(ctx, service.repository, input.Actor, SecurityEvent{
+		ID: eventID, EventType: "role_change", TargetIdentityID: identityID,
+		RequestID: requestID, OccurredAt: changedAt,
+	}, changedAt); err != nil {
+		return err
+	}
 	return service.repository.ChangeIdentityRole(ctx, RoleChange{
 		EventID: eventID, IdentityID: identityID, Role: input.Role, ActorIdentityID: strings.TrimSpace(input.Actor.IdentityID),
-		RequestID: requestID, ChangedAt: service.now().UTC(),
+		RequestID: requestID, ChangedAt: changedAt,
 	})
 }
 
@@ -432,9 +440,16 @@ func (service *AdministrationService) changeMembership(ctx context.Context, inpu
 	if err != nil {
 		return ErrInvalidAdministrationRequest
 	}
+	changedAt := service.now().UTC()
+	if err := requireRecentActorReauthentication(ctx, service.repository, input.Actor, SecurityEvent{
+		ID: eventID, EventType: "team_change", TargetIdentityID: identityID,
+		RequestID: requestID, Reason: teamID, OccurredAt: changedAt,
+	}, changedAt); err != nil {
+		return err
+	}
 	return service.repository.ChangeMembership(ctx, MembershipChange{
 		EventID: eventID, IdentityID: identityID, TeamID: teamID, Operation: operation,
-		ActorIdentityID: strings.TrimSpace(input.Actor.IdentityID), RequestID: requestID, ChangedAt: service.now().UTC(),
+		ActorIdentityID: strings.TrimSpace(input.Actor.IdentityID), RequestID: requestID, ChangedAt: changedAt,
 	})
 }
 

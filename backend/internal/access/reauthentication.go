@@ -192,6 +192,7 @@ type SecurityEvent struct {
 	TargetServiceAccountID string
 	TargetKeyID            string
 	TargetAuditID          string
+	InvestigationCaseID    string
 	RequestID              string
 	Outcome                SecurityEventOutcome
 	Reason                 string
@@ -201,6 +202,23 @@ type SecurityEvent struct {
 
 type SecurityEventWriter interface {
 	AppendSecurityEvent(context.Context, SecurityEvent) error
+}
+
+func requireRecentActorReauthentication(ctx context.Context, events SecurityEventWriter, actor Actor, event SecurityEvent, now time.Time) error {
+	if hasRecentActorReauthentication(actor, now) {
+		return nil
+	}
+	event.ActorIdentityID = strings.TrimSpace(actor.IdentityID)
+	event.Outcome = SecurityEventDenied
+	event.DetailCode = "reauthentication_required"
+	if events == nil || events.AppendSecurityEvent(ctx, event) != nil {
+		return ErrSecurityAuditUnavailable
+	}
+	return ErrReauthenticationRequired
+}
+
+func hasRecentActorReauthentication(actor Actor, now time.Time) bool {
+	return actor.ReauthenticatedUntil != nil && actor.ReauthenticatedUntil.After(now)
 }
 
 type SensitiveActionRequest struct {

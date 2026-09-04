@@ -16,7 +16,7 @@ func TestAdministrationRepositoryReadsDeclaredResources(t *testing.T) {
 	seedAccessOwners(t, db)
 	mustExec(t, db, `INSERT INTO memberships (identity_id, team_id) VALUES ($1, $2)`, accessEmployeeID, accessTeamID)
 	repository := NewRepository(db)
-	administrator := access.Actor{IdentityID: accessAdminID, Role: access.RoleSystemAdministrator}
+	administrator := reauthenticatedSystemAdministrator(accessAdminID)
 	service := access.NewAdministrationService(repository)
 
 	invitation, err := access.NewInvitationService(repository).Create(context.Background(), access.CreateInvitationInput{
@@ -90,7 +90,7 @@ func TestAdministrationRepositoryTeamChangesAreAuditedAndAtomic(t *testing.T) {
 	seedAccessOwners(t, db)
 	repository := NewRepository(db)
 	service := access.NewAdministrationService(repository)
-	administrator := access.Actor{IdentityID: accessAdminID, Role: access.RoleSystemAdministrator}
+	administrator := reauthenticatedSystemAdministrator(accessAdminID)
 
 	const createRequestID = "87000000-0000-0000-0000-000000000312"
 	team, err := service.CreateTeam(context.Background(), access.CreateAdministrationTeamInput{Actor: administrator, Name: "Core", RequestID: createRequestID})
@@ -129,7 +129,7 @@ func TestAdministrationRepositoryListsOnlyForActiveSystemAdministrator(t *testin
 	mustExec(t, db, `INSERT INTO memberships (identity_id, team_id) VALUES ($1, $2)`, accessEmployeeID, accessTeamID)
 	repository := NewRepository(db)
 	service := access.NewAdministrationService(repository)
-	administrator := access.Actor{IdentityID: accessAdminID, Role: access.RoleSystemAdministrator}
+	administrator := reauthenticatedSystemAdministrator(accessAdminID)
 
 	accounts, err := service.ListAccounts(context.Background(), administrator, access.AdministrationAccountFilter{Limit: 50})
 	if err != nil {
@@ -156,7 +156,7 @@ func TestAdministrationRepositoryRoleChangeRevokesInvalidOwnerKeysAndAudits(t *t
 	seedAccessOwners(t, db)
 	mustExec(t, db, `INSERT INTO memberships (identity_id, team_id) VALUES ($1, $2)`, accessEmployeeID, accessTeamID)
 	repository := NewRepository(db)
-	actor := access.Actor{IdentityID: accessAdminID, Role: access.RoleSystemAdministrator}
+	actor := reauthenticatedSystemAdministrator(accessAdminID)
 	_, key, secret := createOffboardingServiceKey(t, repository, actor, accessTeamID, accessEmployeeID, "role-change-agent")
 
 	const requestID = "87000000-0000-0000-0000-000000000301"
@@ -184,7 +184,7 @@ func TestAdministrationRepositoryMembershipChangesAreAuditedAndAtomic(t *testing
 	seedAccessOwners(t, db)
 	mustExec(t, db, `INSERT INTO teams (id, name, status) VALUES ($1, 'Administration Other', 'active')`, offboardingOtherTeamID)
 	repository := NewRepository(db)
-	actor := access.Actor{IdentityID: accessAdminID, Role: access.RoleSystemAdministrator}
+	actor := reauthenticatedSystemAdministrator(accessAdminID)
 	service := access.NewAdministrationService(repository)
 
 	const addRequestID = "87000000-0000-0000-0000-000000000302"
@@ -216,7 +216,7 @@ func TestAdministrationRepositoryRollsBackRoleAndKeyEventsWhenFinalAuditFails(t 
 	seedAccessOwners(t, db)
 	mustExec(t, db, `INSERT INTO memberships (identity_id, team_id) VALUES ($1, $2)`, accessEmployeeID, accessTeamID)
 	repository := NewRepository(db)
-	actor := access.Actor{IdentityID: accessAdminID, Role: access.RoleSystemAdministrator}
+	actor := reauthenticatedSystemAdministrator(accessAdminID)
 	_, key, secret := createOffboardingServiceKey(t, repository, actor, accessTeamID, accessEmployeeID, "role-event-rollback")
 	mustExec(t, db, `CREATE FUNCTION reject_role_change_event() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.event_type = 'role_change' THEN RAISE EXCEPTION 'synthetic role change event failure'; END IF; RETURN NEW; END $$`)
 	mustExec(t, db, `CREATE TRIGGER reject_role_change_event BEFORE INSERT ON security_events FOR EACH ROW EXECUTE FUNCTION reject_role_change_event()`)
@@ -238,6 +238,11 @@ func TestAdministrationRepositoryRollsBackRoleAndKeyEventsWhenFinalAuditFails(t 
 		t.Fatalf("rolled-back owner credential Authenticate() error = %v", err)
 	}
 	assertAdministrationRequestEventCount(t, db, requestID, 0)
+}
+
+func reauthenticatedSystemAdministrator(identityID string) access.Actor {
+	grantUntil := time.Now().UTC().Add(time.Minute)
+	return access.Actor{IdentityID: identityID, Role: access.RoleSystemAdministrator, ReauthenticatedUntil: &grantUntil}
 }
 
 func assertAdministrationEvent(t *testing.T, db queryRower, requestID, eventType, targetIdentityID, reason, detailCode string) {

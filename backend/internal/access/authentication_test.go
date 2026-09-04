@@ -12,13 +12,31 @@ import (
 	"time"
 )
 
-func TestUnknownLoginLimiterHasBoundedState(t *testing.T) {
-	limiter := newUnknownLoginLimiter()
+func TestLoginAttemptLimiterHasBoundedState(t *testing.T) {
+	limiter := newLoginAttemptLimiter()
 	for index := 0; index < 4096+128; index++ {
-		limiter.allow(fmt.Sprintf("missing-%d@example.internal", index), fixedNow)
+		limiter.allow(fmt.Sprintf("missing-%d@example.internal", index), false, fixedNow)
 	}
 	if got := len(limiter.states); got > 4096 {
 		t.Fatalf("unknown-login limiter state = %d, want at most 4096", got)
+	}
+}
+
+func TestAuthenticationLimiterCapacityDoesNotBlockKnownAccount(t *testing.T) {
+	repository := &memoryAuthenticationRepository{candidate: LoginCandidate{
+		Found: true, IdentityID: "identity-1", Email: "employee@example.internal", Status: IdentityStatusActive, PasswordHash: "stored-password-hash",
+	}}
+	passwords := newFakePasswordCodec()
+	service := newTestAuthenticationService(t, repository, passwords)
+	for index := 0; index < loginAttemptStateLimit; index++ {
+		service.limiter.allow(fmt.Sprintf("missing-%d@example.internal", index), false, fixedNow)
+	}
+
+	if _, err := service.Login(context.Background(), LoginInput{Email: "employee@example.internal", Password: "correct-password"}); err != nil {
+		t.Fatalf("Login() after unknown-email state saturation error = %v", err)
+	}
+	if got := len(service.limiter.states); got > loginAttemptStateLimit {
+		t.Fatalf("login limiter state = %d, want at most %d", got, loginAttemptStateLimit)
 	}
 }
 
@@ -84,7 +102,7 @@ func TestAuthenticationRejectsUnknownWrongDisabledAndLockedCredentialsIndistingu
 	}
 }
 
-func TestAuthenticationUnknownEmailLimiterAllowsFiveConcurrentAttempts(t *testing.T) {
+func TestAuthenticationUnknownEmailLimiterSkipsPasswordVerificationAfterFiveConcurrentAttempts(t *testing.T) {
 	repository := &memoryAuthenticationRepository{}
 	passwords := newFakePasswordCodec()
 	service := newTestAuthenticationService(t, repository, passwords)
@@ -110,8 +128,8 @@ func TestAuthenticationUnknownEmailLimiterAllowsFiveConcurrentAttempts(t *testin
 			t.Fatalf("Login() call %d error = %v, want ErrInvalidCredentials", index, err)
 		}
 	}
-	if got := len(passwords.verificationCalls()); got != len(errorsByCall) {
-		t.Fatalf("password verification calls = %d, want one dummy verification per attempt (%d)", got, len(errorsByCall))
+	if got := len(passwords.verificationCalls()); got != loginFailureLimit {
+		t.Fatalf("password verification calls = %d, want limiter to allow only %d", got, loginFailureLimit)
 	}
 
 	service.now = func() time.Time { return fixedNow.Add(loginLockDuration) }
@@ -121,8 +139,60 @@ func TestAuthenticationUnknownEmailLimiterAllowsFiveConcurrentAttempts(t *testin
 	if err != ErrInvalidCredentials {
 		t.Fatalf("Login() at lock expiry error = %v, want ErrInvalidCredentials", err)
 	}
-	if got := len(passwords.verificationCalls()); got != len(errorsByCall)+1 {
-		t.Fatalf("password verification calls after expiry = %d, want %d", got, len(errorsByCall)+1)
+	if got := len(passwords.verificationCalls()); got != loginFailureLimit+1 {
+		t.Fatalf("password verification calls after expiry = %d, want %d", got, loginFailureLimit+1)
+	}
+}
+
+func TestAuthenticationLimiterBoundsHashWorkForKnownIneligibleAccounts(t *testing.T) {
+	tests := []struct {
+		name      string
+		candidate LoginCandidate
+	}{
+		{
+			name: "disabled identity",
+			candidate: LoginCandidate{
+				Found: true, IdentityID: "identity-1", Email: "employee@example.internal", Status: IdentityStatusDisabled, PasswordHash: "stored-password-hash",
+			},
+		},
+		{
+			name: "locked identity",
+			candidate: LoginCandidate{
+				Found: true, IdentityID: "identity-1", Email: "employee@example.internal", Status: IdentityStatusActive, PasswordHash: "stored-password-hash", LockedUntil: timePointer(fixedNow.Add(time.Minute)),
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			passwords := newFakePasswordCodec()
+			service := newTestAuthenticationService(t, &memoryAuthenticationRepository{candidate: test.candidate}, passwords)
+			for attempt := 0; attempt < 20; attempt++ {
+				if _, err := service.Login(context.Background(), LoginInput{Email: test.candidate.Email, Password: "wrong-password"}); !errors.Is(err, ErrInvalidCredentials) {
+					t.Fatalf("Login() attempt %d error = %v, want ErrInvalidCredentials", attempt+1, err)
+				}
+			}
+			if got := len(passwords.verificationCalls()); got != loginFailureLimit {
+				t.Fatalf("password verification calls = %d, want %d", got, loginFailureLimit)
+			}
+		})
+	}
+}
+
+func TestAuthenticationSuccessfulLoginResetsAttemptLimit(t *testing.T) {
+	repository := &memoryAuthenticationRepository{candidate: LoginCandidate{
+		Found: true, IdentityID: "identity-1", Email: "employee@example.internal", Status: IdentityStatusActive, PasswordHash: "stored-password-hash",
+	}}
+	passwords := newFakePasswordCodec()
+	service := newTestAuthenticationService(t, repository, passwords)
+
+	for attempt := 0; attempt < loginFailureLimit+2; attempt++ {
+		if _, err := service.Login(context.Background(), LoginInput{Email: "employee@example.internal", Password: "correct-password"}); err != nil {
+			t.Fatalf("Login() attempt %d error = %v", attempt+1, err)
+		}
+	}
+	if got := len(passwords.verificationCalls()); got != loginFailureLimit+2 {
+		t.Fatalf("password verification calls = %d, want %d successful attempts", got, loginFailureLimit+2)
 	}
 }
 
