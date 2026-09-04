@@ -168,10 +168,10 @@ INSERT INTO sessions (
 const insertSecurityEventSQL = `
 INSERT INTO security_events (
     id, event_type, actor_identity_id, target_identity_id, target_service_account_id, target_key_id, target_audit_id,
-    request_id, outcome, reason, detail_code, occurred_at
+    investigation_case_id, request_id, outcome, reason, detail_code, occurred_at
 ) VALUES (
     $1, $2, NULLIF($3, '')::uuid, NULLIF($4, '')::uuid, NULLIF($5, '')::uuid, NULLIF($6, '')::uuid, NULLIF($7, '')::uuid,
-    $8, $9, NULLIF($10, ''), NULLIF($11, ''), $12
+    NULLIF($8, '')::uuid, $9, $10, NULLIF($11, ''), NULLIF($12, ''), $13
 )`
 
 // Lifecycle events use detail_code for the bounded non-secret key prefix.
@@ -508,7 +508,7 @@ func (r *Repository) RotatePortalSession(ctx context.Context, rotation access.Po
 func (r *Repository) AppendSecurityEvent(ctx context.Context, event access.SecurityEvent) error {
 	_, err := r.db.ExecContext(ctx, insertSecurityEventSQL,
 		event.ID, event.EventType, event.ActorIdentityID, event.TargetIdentityID,
-		event.TargetServiceAccountID, event.TargetKeyID, event.TargetAuditID,
+		event.TargetServiceAccountID, event.TargetKeyID, event.TargetAuditID, event.InvestigationCaseID,
 		event.RequestID, event.Outcome, event.Reason, event.DetailCode, event.OccurredAt,
 	)
 	if err != nil {
