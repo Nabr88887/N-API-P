@@ -256,6 +256,56 @@ func TestRepositoryMetadataRetentionRemovesExpiredIdentityDependencies(t *testin
 	}
 }
 
+func TestRepositoryMetadataRetentionRemovesExpiredInvestigationCasesBeforeIdentityOwnership(t *testing.T) {
+	db, _ := migrateRepositorySchema(t)
+	repository := NewRepository(db)
+	const (
+		identityID = "82000000-0000-0000-0000-000000000081"
+		activeID   = "82000000-0000-0000-0000-000000000082"
+		caseID     = "88000000-0000-0000-0000-000000000081"
+		openCaseID = "88000000-0000-0000-0000-000000000082"
+		eventID    = "86000000-0000-0000-0000-000000000081"
+		requestID  = "87000000-0000-0000-0000-000000000081"
+	)
+	disabledAt := time.Date(2022, time.March, 1, 0, 0, 0, 0, time.UTC)
+	purgeAt := time.Date(2024, time.March, 1, 12, 0, 0, 0, time.UTC)
+	mustExec(t, db, `INSERT INTO identities (id, email, role, status, created_at, updated_at, disabled_at) VALUES ($1, 'expired-investigation-owner@example.internal', 'employee', 'disabled', $2, $2, $2)`, identityID, disabledAt)
+	mustExec(t, db, `INSERT INTO identities (id, email, role, status, created_at, updated_at) VALUES ($1, 'active-investigation-owner@example.internal', 'employee', 'active', $2, $2)`, activeID, disabledAt)
+	mustExec(t, db, `INSERT INTO investigation_cases (id, subject_identity_id, policy_concern, reason, start_at, end_at, status, created_by_identity_id, created_at, closed_by_identity_id, closed_at, disposition) VALUES ($1, $2, 'expired concern', 'expired reason', $3, $4, 'closed', $2, $5, $2, $5, 'inconclusive')`, caseID, identityID, disabledAt.Add(-time.Hour), disabledAt, disabledAt)
+	mustExec(t, db, `INSERT INTO investigation_cases (id, subject_identity_id, policy_concern, reason, start_at, end_at, status, created_by_identity_id, created_at) VALUES ($1, $2, 'open concern', 'open reason', $3, $4, 'open', $2, $4)`, openCaseID, activeID, disabledAt.Add(-time.Hour), disabledAt)
+	mustExec(t, db, `INSERT INTO security_events (id, event_type, actor_identity_id, investigation_case_id, request_id, outcome, detail_code, occurred_at, retain_until) VALUES ($1, 'investigation_case', $2, $3, $4, 'success', 'case_created', $5, $6)`, eventID, identityID, caseID, requestID, disabledAt, disabledAt.AddDate(2, 0, 0))
+
+	if _, err := repository.PurgeExpiredMetadata(context.Background(), purgeAt); err != nil {
+		t.Fatalf("PurgeExpiredMetadata() error = %v", err)
+	}
+	for table, query := range map[string]string{
+		"identity":  `SELECT count(*) FROM identities WHERE id = $1`,
+		"case":      `SELECT count(*) FROM investigation_cases WHERE id = $1`,
+		"open case": `SELECT count(*) FROM investigation_cases WHERE id = $1`,
+		"event":     `SELECT count(*) FROM security_events WHERE id = $1`,
+	} {
+		var count int
+		value := identityID
+		if table == "case" {
+			value = caseID
+		} else if table == "event" {
+			value = eventID
+		} else if table == "open case" {
+			value = openCaseID
+		}
+		if err := db.QueryRow(query, value).Scan(&count); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if table == "open case" {
+			if count != 1 {
+				t.Fatalf("%s rows = %d, want 1", table, count)
+			}
+		} else if count != 0 {
+			t.Fatalf("%s rows = %d, want 0", table, count)
+		}
+	}
+}
+
 func TestRepositoryMetadataFailureDoesNotRollbackSuccessfulClasses(t *testing.T) {
 	db, _ := migrateRepositorySchema(t)
 	fixture := insertAuditPolicyFixture(t, db)

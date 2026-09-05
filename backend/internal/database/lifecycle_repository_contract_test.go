@@ -16,6 +16,7 @@ func TestMetadataPurgeQueriesAreBounded(t *testing.T) {
 		"identity code":        purgeExpiredIdentityCodesSQL,
 		"model-policy updater": clearExpiredModelPolicyUpdatersSQL,
 		"identity membership":  purgeExpiredIdentityMembershipsSQL,
+		"investigation cases":  purgeExpiredInvestigationCasesSQL,
 	}
 	for name, query := range queries {
 		t.Run(name, func(t *testing.T) {
@@ -27,5 +28,9 @@ func TestMetadataPurgeQueriesAreBounded(t *testing.T) {
 	if !strings.Contains(purgeExpiredSecurityEventsSQL, "n_api_p_purge_security_events") ||
 		!strings.Contains(purgeExpiredOperationalEventsSQL, "n_api_p_purge_security_events") {
 		t.Fatal("security-event purges do not use the controlled database function")
+	}
+	if !strings.Contains(purgeExpiredInvestigationCasesSQL, "cases.status = 'closed'") ||
+		!strings.Contains(purgeExpiredInvestigationCasesSQL, "cases.closed_at <= $1") {
+		t.Fatal("investigation case purge must only remove closed cases past the closure cutoff")
 	}
 }

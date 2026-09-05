@@ -184,6 +184,25 @@ DELETE FROM sessions
 USING candidates
 WHERE sessions.id = candidates.id`
 
+const purgeExpiredInvestigationCasesSQL = `
+WITH candidates AS (
+    SELECT cases.id
+    FROM investigation_cases AS cases
+    WHERE cases.status = 'closed'
+      AND cases.closed_at IS NOT NULL
+      AND cases.closed_at <= $1
+      AND NOT EXISTS (
+          SELECT 1
+          FROM security_events AS events
+          WHERE events.investigation_case_id = cases.id
+      )
+    ORDER BY cases.created_at, cases.id
+    LIMIT $2
+)
+DELETE FROM investigation_cases AS cases
+USING candidates
+WHERE cases.id = candidates.id`
+
 const purgeExpiredIdentityCodesSQL = `
 WITH candidates AS (
     SELECT codes.id
@@ -457,6 +476,7 @@ func (r *Repository) purgeExpiredOwnership(ctx context.Context, cutoff time.Time
 		query string
 		count bool
 	}{
+		{name: "investigation cases", query: purgeExpiredInvestigationCasesSQL},
 		{name: "identity sessions", query: purgeExpiredIdentitySessionsSQL},
 		{name: "identity one-time codes", query: purgeExpiredIdentityCodesSQL},
 		{name: "model-policy updater references", query: clearExpiredModelPolicyUpdatersSQL},

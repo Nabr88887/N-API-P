@@ -136,4 +136,54 @@ describe('InvestigationWorkspace', () => {
     await user.click(screen.getByRole('button', { name: 'Create investigation' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('More than 100 retained audit records matched this scope; narrow the time range.')
   })
+
+  it('loads additional investigation case pages without replacing the first page', async () => {
+    const user = userEvent.setup()
+    const firstCase = { id: 'case-page-1', subject_identity_id: 'employee-1', policy_concern: 'token use', reason: 'review', start_at: '2026-09-04T00:00:00Z', end_at: '2026-09-05T00:00:00Z', status: 'closed' as const, created_by: 'admin-1', created_at: '2026-09-05T02:00:00Z' }
+    const secondCase = { ...firstCase, id: 'case-page-2', subject_identity_id: 'employee-2', created_at: '2026-09-05T01:00:00Z' }
+    const client = {
+      listInvestigationCases: vi.fn()
+        .mockResolvedValueOnce({ data: [firstCase], pagination: { has_more: true, next_cursor: 'cursor-1' } })
+        .mockResolvedValueOnce({ data: [secondCase], pagination: { has_more: false } }),
+    } as unknown as AdminPortalClient
+    render(<InvestigationWorkspace client={client} />)
+
+    await user.click(await screen.findByRole('button', { name: 'Load more investigation cases' }))
+    expect(await screen.findByText('employee-2')).toBeInTheDocument()
+    expect(screen.getByText('employee-1')).toBeInTheDocument()
+    expect(client.listInvestigationCases).toHaveBeenLastCalledWith({ cursor: 'cursor-1' })
+    expect(screen.queryByRole('button', { name: 'Load more investigation cases' })).not.toBeInTheDocument()
+  })
+
+  it('keeps the most recently requested raw view when earlier requests finish later', async () => {
+    const user = userEvent.setup()
+    const firstCase = { id: 'case-race', subject_identity_id: 'employee-race', policy_concern: 'token use', reason: 'review', start_at: '2026-09-04T00:00:00Z', end_at: '2026-09-05T00:00:00Z', status: 'open' as const, created_by: 'admin-1', created_at: '2026-09-05T01:00:00Z' }
+    const candidates = [
+      { audit_id: 'audit-a', capture_status: 'complete' as const, created_at: '2026-09-05T00:00:00Z', expires_at: '2099-09-06T00:00:00Z' },
+      { audit_id: 'audit-b', capture_status: 'complete' as const, created_at: '2026-09-05T00:01:00Z', expires_at: '2099-09-06T00:00:00Z' },
+    ]
+    let resolveFirst!: (value: unknown) => void
+    let resolveSecond!: (value: unknown) => void
+    const firstView = new Promise((resolve) => { resolveFirst = resolve })
+    const secondView = new Promise((resolve) => { resolveSecond = resolve })
+    const client = {
+      listInvestigationCases: vi.fn().mockResolvedValue({ data: [firstCase], pagination: { has_more: false } }),
+      listInvestigationCandidates: vi.fn().mockResolvedValue({ data: candidates, pagination: { has_more: false } }),
+      issueInvestigationGrant: vi.fn().mockResolvedValue({ case_id: 'case-race', expires_at: '2099-09-05T01:30:00Z' }),
+      viewInvestigationAudit: vi.fn((_: string, auditID: string) => auditID === 'audit-a' ? firstView : secondView),
+    } as unknown as AdminPortalClient
+    render(<InvestigationWorkspace client={client} />)
+    await user.click(await screen.findByRole('button', { name: 'Open case' }))
+    await user.click(await screen.findByRole('button', { name: 'Authorize access' }))
+    const viewButtons = await screen.findAllByRole('button', { name: 'View one record' })
+    await user.click(viewButtons[0])
+    await user.click(viewButtons[1])
+
+    resolveSecond({ audit_id: 'audit-b', request: { status: 'complete', json: { marker: 'second' } }, response: { status: 'complete', json: { marker: 'second' } } })
+    expect(await screen.findByText('Record audit-b')).toBeInTheDocument()
+    resolveFirst({ audit_id: 'audit-a', request: { status: 'complete', json: { marker: 'first' } }, response: { status: 'complete', json: { marker: 'first' } } })
+    await act(async () => { await Promise.resolve() })
+    expect(screen.getByText('Record audit-b')).toBeInTheDocument()
+    expect(screen.queryByText('Record audit-a')).not.toBeInTheDocument()
+  })
 })
