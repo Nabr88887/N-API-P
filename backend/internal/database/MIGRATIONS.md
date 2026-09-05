@@ -104,3 +104,14 @@ version-6 trigger behavior. It intentionally leaves
 `model_allowlist.updated_by_identity_id` nullable because a removed historical
 updater cannot be reconstructed safely. Deployed rollback uses a compatible
 prior image or a new forward repair rather than a destructive schema downgrade.
+
+## 000008 Governed Investigations
+
+Migration `000008_governed_investigations` adds metadata-only investigation
+cases, immutable candidate membership, session-bound access grants, and
+nullable case attribution on security events. Candidate membership cascades
+when its case is deleted, but deliberately has no foreign key to `audit_records`:
+the candidate UUID snapshot remains after audit metadata is purged, so case rows
+never prevent independent raw-content expiry or metadata cleanup. The down
+migration is for disposable schemas only; deployed rollback disables the routes
+and uses a forward repair or a separately confirmed recovery point.

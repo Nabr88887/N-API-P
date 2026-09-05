@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	productionMigrationTargetVersion uint = 7
+	productionMigrationTargetVersion uint = 8
 	maximumRecoveryManifestBytes          = 16 * 1024
 	maximumRecoveryPointAge               = 24 * time.Hour
 	migrationStatementTimeout             = 5 * time.Minute
@@ -63,6 +63,9 @@ var (
 		"public.usage_records",
 		"public.security_events",
 		"public.operational_state",
+		"public.investigation_cases",
+		"public.investigation_case_audits",
+		"public.investigation_access_grants",
 	}
 )
 

@@ -51,6 +51,8 @@ func TestErrorDefinitionsExposeOnlyApprovedSafeSemantics(t *testing.T) {
 		{CodeUpstreamResponseTooLarge, 502, TypeUpstream, "Upstream response is too large."},
 		{CodeAuditUnavailable, 503, TypeServiceUnavailable, "Audit persistence is unavailable."},
 		{CodeUpstreamTimeout, 504, TypeUpstream, "Upstream request timed out."},
+		{CodeInvestigationScopeTooBroad, 409, TypeInvalidRequest, "More than 100 retained audit records matched this scope; narrow the time range."},
+		{CodeInvestigationNoCandidates, 400, TypeInvalidRequest, "No retained audit records matched this employee and time range."},
 	}
 
 	for _, tt := range tests {
@@ -211,6 +213,12 @@ func expectedRoutes() map[string]Route {
 		approvedRoute("admin.audits.list", MethodGet, "/api/v1/audits", SurfacePortal, AuthPortalSession, systemRole),
 		approvedRoute("admin.audits.get", MethodGet, "/api/v1/audits/{auditID}", SurfacePortal, AuthPortalSession, systemRole),
 		approvedRoute("admin.audits.view_raw", MethodPost, "/api/v1/audits/{auditID}/raw-views", SurfacePortal, AuthPortalSession, systemRole),
+		approvedRoute("admin.investigations.create", MethodPost, "/api/v1/investigation-cases", SurfacePortal, AuthPortalSession, systemRole),
+		approvedRoute("admin.investigations.list", MethodGet, "/api/v1/investigation-cases", SurfacePortal, AuthPortalSession, systemRole),
+		approvedRoute("admin.investigations.candidates", MethodGet, "/api/v1/investigation-cases/{caseID}/audits", SurfacePortal, AuthPortalSession, systemRole),
+		approvedRoute("admin.investigations.raw_view", MethodPost, "/api/v1/investigation-cases/{caseID}/audits/{auditID}/raw-views", SurfacePortal, AuthPortalSession, systemRole),
+		approvedRoute("admin.investigations.grant", MethodPost, "/api/v1/investigation-cases/{caseID}/access-grants", SurfacePortal, AuthPortalSession, systemRole),
+		approvedRoute("admin.investigations.close", MethodPost, "/api/v1/investigation-cases/{caseID}/closures", SurfacePortal, AuthPortalSession, systemRole),
 		approvedRoute("admin.security_events.list", MethodGet, "/api/v1/security-events", SurfacePortal, AuthPortalSession, systemRole),
 		approvedRoute("admin.operations.health", MethodGet, "/api/v1/operations/health", SurfacePortal, AuthPortalSession, systemRole),
 		approvedRoute("admin.operations.events", MethodGet, "/api/v1/operations/events", SurfacePortal, AuthPortalSession, systemRole),

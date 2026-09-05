@@ -1,0 +1,10 @@
+DROP INDEX IF EXISTS security_events_investigation_case_idx;
+ALTER TABLE security_events DROP CONSTRAINT IF EXISTS security_events_investigation_case_valid;
+ALTER TABLE security_events DROP COLUMN IF EXISTS investigation_case_id;
+DROP INDEX IF EXISTS investigation_access_grants_lookup_idx;
+DROP INDEX IF EXISTS investigation_case_audits_audit_idx;
+DROP INDEX IF EXISTS investigation_cases_subject_created_idx;
+DROP INDEX IF EXISTS investigation_cases_status_created_idx;
+DROP TABLE IF EXISTS investigation_access_grants;
+DROP TABLE IF EXISTS investigation_case_audits;
+DROP TABLE IF EXISTS investigation_cases;

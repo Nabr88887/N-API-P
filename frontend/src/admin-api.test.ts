@@ -102,4 +102,17 @@ describe('admin portal client', () => {
 
     expect(fetchMock).toHaveBeenCalledWith('/api/v1/service-accounts/service%2F1/keys?limit=50&cursor=opaque+cursor', expect.objectContaining({ credentials: 'same-origin' }))
   })
+
+  it('keeps investigation grants server-side and views one record at a time', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ case: { id: 'case-1' }, grant: { case_id: 'case-1', expires_at: '2026-09-05T10:00:00Z' } }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ audit_id: 'audit-1', request: { status: 'complete' }, response: { status: 'unavailable' } }), { status: 200 }))
+    const client = createAdminPortalClient()
+
+    await client.createInvestigationCase!({ subject_identity_id: 'employee-1', policy_concern: 'token use', reason: 'incident review', start_at: '2026-09-04T00:00:00Z', end_at: '2026-09-05T00:00:00Z', confirmed: true })
+    await client.viewInvestigationAudit!('case/1', 'audit/1')
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/investigation-cases', expect.objectContaining({ method: 'POST', body: expect.not.stringContaining('grant-1') }))
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/v1/investigation-cases/case%2F1/audits/audit%2F1/raw-views', expect.objectContaining({ method: 'POST', body: '{}' }))
+  })
 })

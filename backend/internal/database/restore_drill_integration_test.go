@@ -307,6 +307,7 @@ func task105AssertMigrationVersion(t *testing.T, db *sql.DB) {
 		"000005_lifecycle_maintenance.up.sql",
 		"000006_metadata_retention.up.sql",
 		"000007_metadata_retention_hardening.up.sql",
+		"000008_governed_investigations.up.sql",
 	}
 	if strings.Join(migrations, "\n") != strings.Join(wantMigrations, "\n") {
 		t.Fatalf("migration inventory = %v, want %v", migrations, wantMigrations)
@@ -333,7 +334,8 @@ func task105AssertMigrationVersion(t *testing.T, db *sql.DB) {
 	wantTables := []string{
 		"api_keys", "audit_raw_content", "audit_records", "identities", "memberships",
 		"model_allowlist", "one_time_codes", "operational_state", "security_events",
-		"service_accounts", "sessions", "teams", "usage_records",
+		"service_accounts", "sessions", "teams", "usage_records", "investigation_cases",
+		"investigation_case_audits", "investigation_access_grants",
 	}
 	sort.Strings(wantTables)
 	if strings.Join(tables, "\n") != strings.Join(wantTables, "\n") {

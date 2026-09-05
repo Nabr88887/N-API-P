@@ -28,6 +28,12 @@ export type HealthResponse = { state: HealthState; components: HealthComponent[]
 export type OperationalEvent = { id: string; event_type: string; severity: string; detail_code?: string; occurred_at: string }
 export type SecurityEventOutcome = 'success' | 'denied' | 'failure'
 export type SecurityEventMetadata = { id: string; event_type: string; actor_account_id?: string; target_account_id?: string; target_service_account_id?: string; target_key_id?: string; target_audit_id?: string; request_id: string; outcome: SecurityEventOutcome; occurred_at: string }
+export type InvestigationCaseStatus = 'open' | 'closed'
+export type InvestigationDisposition = 'confirmed_violation' | 'no_violation' | 'inconclusive'
+export type InvestigationCase = { id: string; subject_identity_id: string; policy_concern: string; reason: string; start_at: string; end_at: string; status: InvestigationCaseStatus; created_by: string; created_at: string; closed_by?: string; closed_at?: string; disposition?: InvestigationDisposition; closure_note?: string }
+export type InvestigationCandidate = { audit_id: string; capture_status: AuditCaptureStatus; created_at: string; expires_at: string }
+export type InvestigationContent = { status: 'complete' | 'truncated' | 'incomplete' | 'unavailable'; json?: unknown; fragment?: string }
+export type InvestigationRawView = { audit_id: string; request: InvestigationContent; response: InvestigationContent }
 
 export class AdminAPIError extends Error {
   constructor(public readonly code: string) { super(code) }
@@ -59,6 +65,12 @@ export interface AdminPortalClient {
   listOperationalEvents(query?: { cursor?: string }): Promise<PagedResponse<OperationalEvent>>
   listSecurityEvents(query?: { cursor?: string }): Promise<PagedResponse<SecurityEventMetadata>>
   reauthenticate(password: string): Promise<void>
+  listInvestigationCases?(query?: { cursor?: string; status?: InvestigationCaseStatus }): Promise<PagedResponse<InvestigationCase>>
+  createInvestigationCase?(input: { subject_identity_id: string; policy_concern: string; reason: string; start_at: string; end_at: string; confirmed: boolean }): Promise<{ case: InvestigationCase; grant: { case_id: string; expires_at: string } }>
+  listInvestigationCandidates?(caseID: string): Promise<PagedResponse<InvestigationCandidate>>
+  issueInvestigationGrant?(caseID: string): Promise<{ case_id: string; expires_at: string }>
+  viewInvestigationAudit?(caseID: string, auditID: string): Promise<InvestigationRawView>
+  closeInvestigationCase?(caseID: string, disposition: InvestigationDisposition, note: string): Promise<void>
 }
 
 export function createAdminPortalClient(): AdminPortalClient {
@@ -108,5 +120,11 @@ export function createAdminPortalClient(): AdminPortalClient {
     listOperationalEvents: (query = {}) => request(pagePath('/api/v1/operations/events', query)),
     listSecurityEvents: (query = {}) => request(pagePath('/api/v1/security-events', query)),
     reauthenticate: (password) => request('/api/v1/sessions/current/reauthentications', { method: 'POST', body: JSON.stringify({ password }) }),
+    listInvestigationCases: (query = {}) => request(pagePath('/api/v1/investigation-cases', query)),
+    createInvestigationCase: (input) => request('/api/v1/investigation-cases', { method: 'POST', body: JSON.stringify(input) }),
+    listInvestigationCandidates: (caseID) => request(pagePath(`/api/v1/investigation-cases/${encodeURIComponent(caseID)}/audits`)),
+    issueInvestigationGrant: (caseID) => request(`/api/v1/investigation-cases/${encodeURIComponent(caseID)}/access-grants`, { method: 'POST', body: JSON.stringify({ confirmed: true }) }),
+    viewInvestigationAudit: (caseID, auditID) => request(`/api/v1/investigation-cases/${encodeURIComponent(caseID)}/audits/${encodeURIComponent(auditID)}/raw-views`, { method: 'POST', body: '{}' }),
+    closeInvestigationCase: (caseID, disposition, note) => request(`/api/v1/investigation-cases/${encodeURIComponent(caseID)}/closures`, { method: 'POST', body: JSON.stringify({ disposition, note, confirmed: true }) }),
   }
 }

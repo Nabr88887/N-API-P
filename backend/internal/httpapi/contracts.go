@@ -17,27 +17,29 @@ const (
 type ErrorCode string
 
 const (
-	CodeInvalidRequest           ErrorCode = "INVALID_REQUEST"
-	CodeAuthenticationRequired   ErrorCode = "AUTHENTICATION_REQUIRED"
-	CodeInvalidCredentials       ErrorCode = "INVALID_CREDENTIALS"
-	CodeInvalidAPIKey            ErrorCode = "INVALID_API_KEY"
-	CodeForbidden                ErrorCode = "FORBIDDEN"
-	CodeCSRFRejected             ErrorCode = "CSRF_REJECTED"
-	CodeReauthenticationRequired ErrorCode = "REAUTHENTICATION_REQUIRED"
-	CodeModelNotAllowed          ErrorCode = "MODEL_NOT_ALLOWED"
-	CodeNotFound                 ErrorCode = "NOT_FOUND"
-	CodeUnsupportedEndpoint      ErrorCode = "UNSUPPORTED_ENDPOINT"
-	CodeConflict                 ErrorCode = "CONFLICT"
-	CodeKeyLimitReached          ErrorCode = "KEY_LIMIT_REACHED"
-	CodeRequestTooLarge          ErrorCode = "REQUEST_TOO_LARGE"
-	CodeUnsupportedContentType   ErrorCode = "UNSUPPORTED_CONTENT_TYPE"
-	CodeRateLimited              ErrorCode = "RATE_LIMITED"
-	CodeInternalError            ErrorCode = "INTERNAL_ERROR"
-	CodeUpstreamError            ErrorCode = "UPSTREAM_ERROR"
-	CodeUpstreamUnavailable      ErrorCode = "UPSTREAM_UNAVAILABLE"
-	CodeUpstreamResponseTooLarge ErrorCode = "UPSTREAM_RESPONSE_TOO_LARGE"
-	CodeAuditUnavailable         ErrorCode = "AUDIT_UNAVAILABLE"
-	CodeUpstreamTimeout          ErrorCode = "UPSTREAM_TIMEOUT"
+	CodeInvalidRequest             ErrorCode = "INVALID_REQUEST"
+	CodeAuthenticationRequired     ErrorCode = "AUTHENTICATION_REQUIRED"
+	CodeInvalidCredentials         ErrorCode = "INVALID_CREDENTIALS"
+	CodeInvalidAPIKey              ErrorCode = "INVALID_API_KEY"
+	CodeForbidden                  ErrorCode = "FORBIDDEN"
+	CodeCSRFRejected               ErrorCode = "CSRF_REJECTED"
+	CodeReauthenticationRequired   ErrorCode = "REAUTHENTICATION_REQUIRED"
+	CodeModelNotAllowed            ErrorCode = "MODEL_NOT_ALLOWED"
+	CodeNotFound                   ErrorCode = "NOT_FOUND"
+	CodeUnsupportedEndpoint        ErrorCode = "UNSUPPORTED_ENDPOINT"
+	CodeConflict                   ErrorCode = "CONFLICT"
+	CodeKeyLimitReached            ErrorCode = "KEY_LIMIT_REACHED"
+	CodeRequestTooLarge            ErrorCode = "REQUEST_TOO_LARGE"
+	CodeUnsupportedContentType     ErrorCode = "UNSUPPORTED_CONTENT_TYPE"
+	CodeRateLimited                ErrorCode = "RATE_LIMITED"
+	CodeInternalError              ErrorCode = "INTERNAL_ERROR"
+	CodeUpstreamError              ErrorCode = "UPSTREAM_ERROR"
+	CodeUpstreamUnavailable        ErrorCode = "UPSTREAM_UNAVAILABLE"
+	CodeUpstreamResponseTooLarge   ErrorCode = "UPSTREAM_RESPONSE_TOO_LARGE"
+	CodeAuditUnavailable           ErrorCode = "AUDIT_UNAVAILABLE"
+	CodeUpstreamTimeout            ErrorCode = "UPSTREAM_TIMEOUT"
+	CodeInvestigationScopeTooBroad ErrorCode = "INVESTIGATION_SCOPE_TOO_BROAD"
+	CodeInvestigationNoCandidates  ErrorCode = "INVESTIGATION_NO_CANDIDATES"
 )
 
 type ErrorObject struct {
@@ -58,27 +60,29 @@ type errorDefinition struct {
 }
 
 var errorDefinitions = map[ErrorCode]errorDefinition{
-	CodeInvalidRequest:           {http.StatusBadRequest, TypeInvalidRequest, "Invalid request."},
-	CodeAuthenticationRequired:   {http.StatusUnauthorized, TypeAuthentication, "Authentication required."},
-	CodeInvalidCredentials:       {http.StatusUnauthorized, TypeAuthentication, "Invalid credentials."},
-	CodeInvalidAPIKey:            {http.StatusUnauthorized, TypeAuthentication, "Invalid API key."},
-	CodeForbidden:                {http.StatusForbidden, TypePermission, "Access forbidden."},
-	CodeCSRFRejected:             {http.StatusForbidden, TypePermission, "Request origin or CSRF token rejected."},
-	CodeReauthenticationRequired: {http.StatusForbidden, TypePermission, "Recent password reauthentication required."},
-	CodeModelNotAllowed:          {http.StatusForbidden, TypePermission, "Requested model is not allowed."},
-	CodeNotFound:                 {http.StatusNotFound, TypeInvalidRequest, "Resource not found."},
-	CodeUnsupportedEndpoint:      {http.StatusNotFound, TypeInvalidRequest, "Endpoint not supported."},
-	CodeConflict:                 {http.StatusConflict, TypeInvalidRequest, "Resource state conflicts with the request."},
-	CodeKeyLimitReached:          {http.StatusConflict, TypeInvalidRequest, "Active key limit reached."},
-	CodeRequestTooLarge:          {http.StatusRequestEntityTooLarge, TypeInvalidRequest, "Request body is too large."},
-	CodeUnsupportedContentType:   {http.StatusUnsupportedMediaType, TypeInvalidRequest, "Unsupported content type."},
-	CodeRateLimited:              {http.StatusTooManyRequests, TypeRateLimit, "Rate limit exceeded."},
-	CodeInternalError:            {http.StatusInternalServerError, TypeInternal, "Internal server error."},
-	CodeUpstreamError:            {http.StatusBadGateway, TypeUpstream, "Upstream response was invalid."},
-	CodeUpstreamUnavailable:      {http.StatusBadGateway, TypeUpstream, "Upstream service is unavailable."},
-	CodeUpstreamResponseTooLarge: {http.StatusBadGateway, TypeUpstream, "Upstream response is too large."},
-	CodeAuditUnavailable:         {http.StatusServiceUnavailable, TypeServiceUnavailable, "Audit persistence is unavailable."},
-	CodeUpstreamTimeout:          {http.StatusGatewayTimeout, TypeUpstream, "Upstream request timed out."},
+	CodeInvalidRequest:             {http.StatusBadRequest, TypeInvalidRequest, "Invalid request."},
+	CodeAuthenticationRequired:     {http.StatusUnauthorized, TypeAuthentication, "Authentication required."},
+	CodeInvalidCredentials:         {http.StatusUnauthorized, TypeAuthentication, "Invalid credentials."},
+	CodeInvalidAPIKey:              {http.StatusUnauthorized, TypeAuthentication, "Invalid API key."},
+	CodeForbidden:                  {http.StatusForbidden, TypePermission, "Access forbidden."},
+	CodeCSRFRejected:               {http.StatusForbidden, TypePermission, "Request origin or CSRF token rejected."},
+	CodeReauthenticationRequired:   {http.StatusForbidden, TypePermission, "Recent password reauthentication required."},
+	CodeModelNotAllowed:            {http.StatusForbidden, TypePermission, "Requested model is not allowed."},
+	CodeNotFound:                   {http.StatusNotFound, TypeInvalidRequest, "Resource not found."},
+	CodeUnsupportedEndpoint:        {http.StatusNotFound, TypeInvalidRequest, "Endpoint not supported."},
+	CodeConflict:                   {http.StatusConflict, TypeInvalidRequest, "Resource state conflicts with the request."},
+	CodeKeyLimitReached:            {http.StatusConflict, TypeInvalidRequest, "Active key limit reached."},
+	CodeRequestTooLarge:            {http.StatusRequestEntityTooLarge, TypeInvalidRequest, "Request body is too large."},
+	CodeUnsupportedContentType:     {http.StatusUnsupportedMediaType, TypeInvalidRequest, "Unsupported content type."},
+	CodeRateLimited:                {http.StatusTooManyRequests, TypeRateLimit, "Rate limit exceeded."},
+	CodeInternalError:              {http.StatusInternalServerError, TypeInternal, "Internal server error."},
+	CodeUpstreamError:              {http.StatusBadGateway, TypeUpstream, "Upstream response was invalid."},
+	CodeUpstreamUnavailable:        {http.StatusBadGateway, TypeUpstream, "Upstream service is unavailable."},
+	CodeUpstreamResponseTooLarge:   {http.StatusBadGateway, TypeUpstream, "Upstream response is too large."},
+	CodeAuditUnavailable:           {http.StatusServiceUnavailable, TypeServiceUnavailable, "Audit persistence is unavailable."},
+	CodeUpstreamTimeout:            {http.StatusGatewayTimeout, TypeUpstream, "Upstream request timed out."},
+	CodeInvestigationScopeTooBroad: {http.StatusConflict, TypeInvalidRequest, "More than 100 retained audit records matched this scope; narrow the time range."},
+	CodeInvestigationNoCandidates:  {http.StatusBadRequest, TypeInvalidRequest, "No retained audit records matched this employee and time range."},
 }
 
 func ErrorResponse(code ErrorCode, param *string) (int, ErrorEnvelope) {
@@ -230,6 +234,12 @@ func buildRouteInventory() []Route {
 		route("admin.audits.list", MethodGet, "/api/v1/audits", SurfacePortal, AuthPortalSession, systemRole),
 		route("admin.audits.get", MethodGet, "/api/v1/audits/{auditID}", SurfacePortal, AuthPortalSession, systemRole),
 		route("admin.audits.view_raw", MethodPost, "/api/v1/audits/{auditID}/raw-views", SurfacePortal, AuthPortalSession, systemRole),
+		route("admin.investigations.create", MethodPost, "/api/v1/investigation-cases", SurfacePortal, AuthPortalSession, systemRole),
+		route("admin.investigations.list", MethodGet, "/api/v1/investigation-cases", SurfacePortal, AuthPortalSession, systemRole),
+		route("admin.investigations.candidates", MethodGet, "/api/v1/investigation-cases/{caseID}/audits", SurfacePortal, AuthPortalSession, systemRole),
+		route("admin.investigations.raw_view", MethodPost, "/api/v1/investigation-cases/{caseID}/audits/{auditID}/raw-views", SurfacePortal, AuthPortalSession, systemRole),
+		route("admin.investigations.grant", MethodPost, "/api/v1/investigation-cases/{caseID}/access-grants", SurfacePortal, AuthPortalSession, systemRole),
+		route("admin.investigations.close", MethodPost, "/api/v1/investigation-cases/{caseID}/closures", SurfacePortal, AuthPortalSession, systemRole),
 		route("admin.security_events.list", MethodGet, "/api/v1/security-events", SurfacePortal, AuthPortalSession, systemRole),
 		route("admin.operations.health", MethodGet, "/api/v1/operations/health", SurfacePortal, AuthPortalSession, systemRole),
 		route("admin.operations.events", MethodGet, "/api/v1/operations/events", SurfacePortal, AuthPortalSession, systemRole),

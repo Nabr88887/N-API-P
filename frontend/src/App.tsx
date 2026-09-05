@@ -26,6 +26,7 @@ import { createAdminPortalClient, type AdminPortalClient, type HealthResponse } 
 import { SystemAdminWorkspace } from './SystemAdminWorkspace'
 import { CriticalFaultBanners } from './OperationsWorkspace'
 import { SecurityEventsWorkspace } from './SecurityEventsWorkspace'
+import { InvestigationWorkspace } from './InvestigationWorkspace'
 import { activeCriticalFaults } from './operational-faults'
 import { ModalDialog } from './ModalDialog'
 import { trapTabKey } from './focus-management'
@@ -79,6 +80,7 @@ const roleProfiles: Record<Role, RoleProfile> = {
       { label: 'Model policy', icon: Boxes },
       { label: 'Retention', icon: FileClock },
       { label: 'Audit', icon: FileClock },
+      { label: 'Investigations', icon: ShieldAlert },
       { label: 'Security events', icon: ShieldAlert },
       { label: 'Operations', icon: Settings2 },
     ],
@@ -472,7 +474,7 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
               </>
             ) : role === 'employee' ? employeeSurface() : role === 'team_administrator' ? (
               <TeamWorkspace key={`${activeSection}:${(teamIDs ?? [teamID]).join('|')}`} section={activeSection} teamID={teamID} teamIDs={teamIDs} client={teamClient} />
-            ) : activeSection === 'Security events' ? <SecurityEventsWorkspace client={adminClient} /> : <SystemAdminWorkspace key={activeSection} section={activeSection} client={adminClient} />}
+            ) : activeSection === 'Security events' ? <SecurityEventsWorkspace client={adminClient} /> : activeSection === 'Investigations' ? <InvestigationWorkspace client={adminClient} /> : <SystemAdminWorkspace key={activeSection} section={activeSection} client={adminClient} />}
           </div>
         </main>
       </div>

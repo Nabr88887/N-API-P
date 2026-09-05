@@ -108,6 +108,10 @@ func New(cfg config.Config, secrets *config.Secrets) (*Application, error) {
 	if err != nil {
 		return closeOnError(err)
 	}
+	investigations, err := audit.NewInvestigationService(repository, envelope)
+	if err != nil {
+		return closeOnError(err)
+	}
 	operationsService, err := operations.NewService(repository)
 	if err != nil {
 		return closeOnError(err)
@@ -185,7 +189,7 @@ func New(cfg config.Config, secrets *config.Secrets) (*Application, error) {
 			Models: modelAllowlist, Retention: retention, Administration: administration,
 			Audits: metadata, RawView: rawView, Operations: operationsService,
 			Offboarding: offboarding, ServiceAccount: serviceAccounts, Identity: access.NewIdentityService(repository),
-			SecurityEvents: administration,
+			SecurityEvents: administration, Investigations: investigations,
 		},
 	})
 	if err != nil {

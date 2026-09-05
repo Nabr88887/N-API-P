@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"n-api-p/internal/access"
+	"n-api-p/internal/audit"
 	"n-api-p/internal/observability"
 )
 
@@ -129,6 +130,15 @@ type AdminSecurityEventLister interface {
 	ListSecurityEvents(context.Context, access.Actor, access.AdministrationSecurityEventFilter) (access.AdministrationSecurityEventPage, error)
 }
 
+type AdminInvestigationService interface {
+	Create(context.Context, audit.CreateInvestigationCaseInput) (audit.InvestigationCaseCreate, error)
+	List(context.Context, access.ActivePortalSession, audit.InvestigationCaseListFilter) (audit.InvestigationCasePage, error)
+	Candidates(context.Context, access.ActivePortalSession, string) ([]audit.InvestigationCandidate, error)
+	Inspect(context.Context, audit.CaseRawViewInput) (audit.CaseRawView, error)
+	IssueGrant(context.Context, audit.IssueInvestigationGrantInput) (audit.AccessGrant, error)
+	Close(context.Context, audit.InvestigationCaseClosure) error
+}
+
 type AdminPortalDependencies struct {
 	Sessions         PortalSessionService
 	AllowedOrigin    string
@@ -146,6 +156,7 @@ type AdminPortalDependencies struct {
 	ServiceAccount   AdminServiceAccountService
 	Identity         AdminIdentityService
 	SecurityEvents   AdminSecurityEventLister
+	Investigations   AdminInvestigationService
 }
 
 var ErrAdminPortalDependencies = errors.New("admin portal services are required")
@@ -924,6 +935,26 @@ func NewAdminPortalRouter(deps AdminPortalDependencies) (http.Handler, error) {
 	}
 	if err := registerAdminRoute("admin.audits.view_raw", http.MethodPost, "/api/v1/audits/{auditID}/raw-views", NewRawViewHandler(deps.RawView)); err != nil {
 		return nil, err
+	}
+	if deps.Investigations != nil {
+		if err := registerAdminRoute("admin.investigations.create", http.MethodPost, "/api/v1/investigation-cases", NewAdminInvestigationCreateHandler(deps.Investigations)); err != nil {
+			return nil, err
+		}
+		if err := registerAdminRoute("admin.investigations.list", http.MethodGet, "/api/v1/investigation-cases", NewAdminInvestigationListHandler(deps.Investigations)); err != nil {
+			return nil, err
+		}
+		if err := registerAdminRoute("admin.investigations.candidates", http.MethodGet, "/api/v1/investigation-cases/{caseID}/audits", NewAdminInvestigationCandidatesHandler(deps.Investigations)); err != nil {
+			return nil, err
+		}
+		if err := registerAdminRoute("admin.investigations.raw_view", http.MethodPost, "/api/v1/investigation-cases/{caseID}/audits/{auditID}/raw-views", NewAdminInvestigationRawViewHandler(deps.Investigations)); err != nil {
+			return nil, err
+		}
+		if err := registerAdminRoute("admin.investigations.grant", http.MethodPost, "/api/v1/investigation-cases/{caseID}/access-grants", NewAdminInvestigationGrantHandler(deps.Investigations)); err != nil {
+			return nil, err
+		}
+		if err := registerAdminRoute("admin.investigations.close", http.MethodPost, "/api/v1/investigation-cases/{caseID}/closures", NewAdminInvestigationCloseHandler(deps.Investigations)); err != nil {
+			return nil, err
+		}
 	}
 	if err := registerAdminRoute("admin.security_events.list", http.MethodGet, "/api/v1/security-events", NewAdminSecurityEventListHandler(deps.SecurityEvents)); err != nil {
 		return nil, err

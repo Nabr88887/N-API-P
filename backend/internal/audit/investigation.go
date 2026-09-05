@@ -23,13 +23,14 @@ const (
 )
 
 var (
-	ErrInvalidInvestigation       = errors.New("invalid investigation request")
-	ErrInvestigationForbidden     = errors.New("investigation access forbidden")
-	ErrInvestigationNotFound      = errors.New("investigation case not found")
-	ErrInvestigationGrantNotFound = errors.New("investigation grant not found")
-	ErrInvestigationScopeTooBroad = errors.New("investigation scope too broad")
-	ErrInvestigationNoCandidates  = errors.New("investigation has no candidates")
-	ErrInvestigationClosed        = errors.New("investigation case is closed")
+	ErrInvalidInvestigation         = errors.New("invalid investigation request")
+	ErrInvestigationForbidden       = errors.New("investigation access forbidden")
+	ErrInvestigationNotFound        = errors.New("investigation case not found")
+	ErrInvestigationGrantNotFound   = errors.New("investigation grant not found")
+	ErrInvestigationScopeTooBroad   = errors.New("investigation scope too broad")
+	ErrInvestigationNoCandidates    = errors.New("investigation has no candidates")
+	ErrInvestigationSnapshotChanged = errors.New("investigation snapshot changed")
+	ErrInvestigationClosed          = errors.New("investigation case is closed")
 )
 
 type InvestigationCaseStatus string
@@ -83,6 +84,7 @@ type InvestigationCandidateQuery struct {
 	SubjectIdentityID string
 	StartAt           time.Time
 	EndAt             time.Time
+	VisibleAt         time.Time
 	Limit             int
 }
 
@@ -208,7 +210,7 @@ func (service *InvestigationService) Create(ctx context.Context, input CreateInv
 		return InvestigationCaseCreate{}, ErrInvalidInvestigation
 	}
 	now := service.now().UTC()
-	if input.Session.IdentityID == "" || input.Session.SessionID == "" || input.Session.Role != access.RoleSystemAdministrator {
+	if input.Session.IdentityID == "" || input.Session.SessionID == "" || input.Session.Role != access.RoleSystemAdministrator || input.Session.IdleExpiresAt.IsZero() || !input.Session.IdleExpiresAt.After(now) || input.Session.AbsoluteExpiresAt.IsZero() || !input.Session.AbsoluteExpiresAt.After(now) {
 		return service.rejectCreate(ctx, input, ErrInvestigationForbidden, now)
 	}
 	if input.Session.AbsoluteExpiresAt.IsZero() || !input.Session.AbsoluteExpiresAt.After(now) {
@@ -222,7 +224,7 @@ func (service *InvestigationService) Create(ctx context.Context, input CreateInv
 		!input.StartAt.Before(input.EndAt) || input.EndAt.After(now) || input.EndAt.Sub(input.StartAt) > maxInvestigationDuration {
 		return service.rejectCreate(ctx, input, ErrInvalidInvestigation, now)
 	}
-	query := InvestigationCandidateQuery{SubjectIdentityID: input.SubjectIdentityID, StartAt: input.StartAt.UTC(), EndAt: input.EndAt.UTC(), Limit: maxInvestigationCandidates + 1}
+	query := InvestigationCandidateQuery{SubjectIdentityID: input.SubjectIdentityID, StartAt: input.StartAt.UTC(), EndAt: input.EndAt.UTC(), VisibleAt: now, Limit: maxInvestigationCandidates + 1}
 	candidates, err := service.repository.FindInvestigationCandidates(ctx, query)
 	if err != nil {
 		return InvestigationCaseCreate{}, fmt.Errorf("find investigation candidates: %w", err)
@@ -246,9 +248,9 @@ func (service *InvestigationService) Create(ctx context.Context, input CreateInv
 		grantExpiry = input.Session.AbsoluteExpiresAt
 	}
 	result := InvestigationCaseCreate{
-		Case: InvestigationCase{ID: caseID, SubjectIdentityID: input.SubjectIdentityID, PolicyConcern: strings.TrimSpace(input.PolicyConcern), Reason: strings.TrimSpace(input.Reason), StartAt: input.StartAt.UTC(), EndAt: input.EndAt.UTC(), Status: InvestigationCaseOpen, CreatedBy: input.Session.IdentityID, CreatedAt: now},
-		Candidates: append([]InvestigationCandidate(nil), candidates...),
-		Grant: AccessGrant{ID: grantID, CaseID: caseID, ActorIdentityID: input.Session.IdentityID, SessionID: input.Session.SessionID, IssuedAt: now, ExpiresAt: grantExpiry},
+		Case:           InvestigationCase{ID: caseID, SubjectIdentityID: input.SubjectIdentityID, PolicyConcern: strings.TrimSpace(input.PolicyConcern), Reason: strings.TrimSpace(input.Reason), StartAt: input.StartAt.UTC(), EndAt: input.EndAt.UTC(), Status: InvestigationCaseOpen, CreatedBy: input.Session.IdentityID, CreatedAt: now},
+		Candidates:     append([]InvestigationCandidate(nil), candidates...),
+		Grant:          AccessGrant{ID: grantID, CaseID: caseID, ActorIdentityID: input.Session.IdentityID, SessionID: input.Session.SessionID, IssuedAt: now, ExpiresAt: grantExpiry},
 		CandidateQuery: query,
 	}
 	eventID, err := service.newID()
@@ -293,23 +295,32 @@ func (service *InvestigationService) Inspect(ctx context.Context, input CaseRawV
 		return CaseRawView{}, ErrInvalidInvestigation
 	}
 	now := service.now().UTC()
-	if input.Session.IdentityID == "" || input.Session.SessionID == "" || input.Session.Role != access.RoleSystemAdministrator {
-		return service.rejectView(ctx, input, "forbidden", ErrInvestigationForbidden, now)
+	if input.Session.IdentityID == "" || input.Session.SessionID == "" || input.Session.Role != access.RoleSystemAdministrator || input.Session.IdleExpiresAt.IsZero() || !input.Session.IdleExpiresAt.After(now) || input.Session.AbsoluteExpiresAt.IsZero() || !input.Session.AbsoluteExpiresAt.After(now) {
+		return service.rejectView(ctx, input, "forbidden", ErrInvestigationForbidden, now, "", "")
 	}
 	caseRecord, err := service.repository.GetInvestigationCase(ctx, input.CaseID)
 	if err != nil {
-		return service.rejectView(ctx, input, "case_not_found", err, now)
+		if errors.Is(err, ErrInvestigationNotFound) {
+			return service.rejectView(ctx, input, "case_not_found", err, now, "", "")
+		}
+		return service.rejectViewFailure(ctx, input, "case_lookup_failed", fmt.Errorf("get investigation case: %w", err), now, input.CaseID, "")
 	}
 	if caseRecord.Status != InvestigationCaseOpen {
-		return service.rejectView(ctx, input, "case_closed", ErrInvestigationClosed, now)
+		return service.rejectView(ctx, input, "case_closed", ErrInvestigationClosed, now, input.CaseID, "")
 	}
 	grant, err := service.repository.FindInvestigationAccessGrant(ctx, AccessGrantLookup{CaseID: input.CaseID, ActorIdentityID: input.Session.IdentityID, SessionID: input.Session.SessionID, At: now})
-	if err != nil || grant.ExpiresAt.IsZero() || !grant.ExpiresAt.After(now) || grant.ActorIdentityID != input.Session.IdentityID || grant.SessionID != input.Session.SessionID {
-		return service.rejectView(ctx, input, "grant_invalid", ErrInvestigationForbidden, now)
+	if err != nil {
+		if errors.Is(err, ErrInvestigationGrantNotFound) {
+			return service.rejectView(ctx, input, "grant_invalid", ErrInvestigationForbidden, now, input.CaseID, "")
+		}
+		return service.rejectViewFailure(ctx, input, "grant_lookup_failed", fmt.Errorf("find investigation grant: %w", err), now, input.CaseID, "")
+	}
+	if grant.ExpiresAt.IsZero() || !grant.ExpiresAt.After(now) || grant.ActorIdentityID != input.Session.IdentityID || grant.SessionID != input.Session.SessionID {
+		return service.rejectView(ctx, input, "grant_invalid", ErrInvestigationForbidden, now, input.CaseID, "")
 	}
 	candidates, err := service.repository.ListInvestigationCandidates(ctx, input.CaseID)
 	if err != nil {
-		return service.rejectView(ctx, input, "candidate_lookup_failed", ErrInvestigationNotFound, now)
+		return service.rejectViewFailure(ctx, input, "candidate_lookup_failed", fmt.Errorf("list investigation candidates: %w", err), now, input.CaseID, "")
 	}
 	var candidate *InvestigationCandidate
 	for index := range candidates {
@@ -319,18 +330,18 @@ func (service *InvestigationService) Inspect(ctx context.Context, input CaseRawV
 		}
 	}
 	if candidate == nil {
-		return service.rejectView(ctx, input, "audit_outside_case", ErrInvestigationForbidden, now)
+		return service.rejectView(ctx, input, "audit_outside_case", ErrInvestigationForbidden, now, input.CaseID, "")
 	}
 	view := CaseRawView{AuditID: input.AuditID, Request: CaseContentView{Status: ContentViewUnavailable}, Response: CaseContentView{Status: ContentViewUnavailable}}
-	requestView, requestDetail, requestFatal := service.readCaseContent(ctx, input.AuditID, ContentKindRequest, CaptureStatusComplete, now)
-	responseView, responseDetail, responseFatal := service.readCaseContent(ctx, input.AuditID, ContentKindResponse, candidate.CaptureStatus, now)
+	requestView, requestDetail, requestFatal, requestErr := service.readCaseContent(ctx, input.AuditID, ContentKindRequest, CaptureStatusComplete, now)
+	responseView, responseDetail, responseFatal, responseErr := service.readCaseContent(ctx, input.AuditID, ContentKindResponse, candidate.CaptureStatus, now)
 	view.Request, view.Response = requestView, responseView
 	detail := "case_raw_viewed"
 	outcome := access.SecurityEventSuccess
 	if requestDetail != "" {
 		detail, outcome = requestDetail, access.SecurityEventFailure
 	}
-	if responseDetail != "" {
+	if responseDetail != "" && (!requestFatal || responseFatal) {
 		detail, outcome = responseDetail, access.SecurityEventFailure
 	}
 	if requestFatal || responseFatal {
@@ -340,12 +351,26 @@ func (service *InvestigationService) Inspect(ctx context.Context, input CaseRawV
 		return CaseRawView{}, err
 	}
 	if requestFatal || responseFatal {
+		if requestErr != nil {
+			return CaseRawView{}, requestErr
+		}
+		if responseErr != nil {
+			return CaseRawView{}, responseErr
+		}
 		return CaseRawView{}, ErrInvestigationForbidden
 	}
 	return view, nil
 }
 
-func (service *InvestigationService) rejectView(ctx context.Context, input CaseRawViewInput, detail string, result error, now time.Time) (CaseRawView, error) {
+func (service *InvestigationService) rejectView(ctx context.Context, input CaseRawViewInput, detail string, result error, now time.Time, knownCaseID, knownAuditID string) (CaseRawView, error) {
+	return service.rejectViewWithOutcome(ctx, input, detail, result, now, knownCaseID, knownAuditID, access.SecurityEventDenied)
+}
+
+func (service *InvestigationService) rejectViewFailure(ctx context.Context, input CaseRawViewInput, detail string, result error, now time.Time, knownCaseID, knownAuditID string) (CaseRawView, error) {
+	return service.rejectViewWithOutcome(ctx, input, detail, result, now, knownCaseID, knownAuditID, access.SecurityEventFailure)
+}
+
+func (service *InvestigationService) rejectViewWithOutcome(ctx context.Context, input CaseRawViewInput, detail string, result error, now time.Time, knownCaseID, knownAuditID string, outcome access.SecurityEventOutcome) (CaseRawView, error) {
 	if input.Session.IdentityID == "" || strings.TrimSpace(input.RequestID) == "" {
 		return CaseRawView{}, result
 	}
@@ -353,7 +378,7 @@ func (service *InvestigationService) rejectView(ctx context.Context, input CaseR
 	if err != nil {
 		return CaseRawView{}, access.ErrSecurityAuditUnavailable
 	}
-	event := access.SecurityEvent{ID: eventID, EventType: "investigation_case_raw_view", ActorIdentityID: input.Session.IdentityID, TargetAuditID: input.AuditID, InvestigationCaseID: input.CaseID, RequestID: input.RequestID, Outcome: access.SecurityEventDenied, DetailCode: detail, OccurredAt: now}
+	event := access.SecurityEvent{ID: eventID, EventType: "investigation_case_raw_view", ActorIdentityID: input.Session.IdentityID, TargetAuditID: knownAuditID, InvestigationCaseID: knownCaseID, RequestID: input.RequestID, Outcome: outcome, DetailCode: detail, OccurredAt: now}
 	if err := service.repository.AppendSecurityEvent(ctx, event); err != nil {
 		return CaseRawView{}, access.ErrSecurityAuditUnavailable
 	}
@@ -373,15 +398,24 @@ func (service *InvestigationService) appendViewEvent(ctx context.Context, input 
 }
 
 func (service *InvestigationService) List(ctx context.Context, session access.ActivePortalSession, filter InvestigationCaseListFilter) (InvestigationCasePage, error) {
-	if service == nil || service.repository == nil || session.IdentityID == "" || session.Role != access.RoleSystemAdministrator || filter.Limit < 1 || filter.Limit > maxInvestigationCandidates {
+	if service == nil || service.repository == nil {
 		return InvestigationCasePage{}, ErrInvestigationForbidden
+	}
+	if !service.activeSystemAdministratorSession(session) {
+		return InvestigationCasePage{}, ErrInvestigationForbidden
+	}
+	if filter.Limit < 1 || filter.Limit > maxInvestigationCandidates || !validInvestigationCaseStatusFilter(filter.Status) {
+		return InvestigationCasePage{}, ErrInvalidInvestigation
 	}
 	return service.repository.ListInvestigationCases(ctx, filter)
 }
 
 func (service *InvestigationService) Candidates(ctx context.Context, session access.ActivePortalSession, caseID string) ([]InvestigationCandidate, error) {
-	if service == nil || service.repository == nil || session.IdentityID == "" || session.Role != access.RoleSystemAdministrator || !validInvestigationID(caseID) {
+	if service == nil || service.repository == nil || !service.activeSystemAdministratorSession(session) || !validInvestigationID(caseID) {
 		return nil, ErrInvestigationForbidden
+	}
+	if _, err := service.repository.GetInvestigationCase(ctx, caseID); err != nil {
+		return nil, err
 	}
 	candidates, err := service.repository.ListInvestigationCandidates(ctx, caseID)
 	if err != nil {
@@ -393,6 +427,18 @@ func (service *InvestigationService) Candidates(ctx context.Context, session acc
 	return candidates, nil
 }
 
+func (service *InvestigationService) activeSystemAdministratorSession(session access.ActivePortalSession) bool {
+	if session.IdentityID == "" || session.SessionID == "" || session.Role != access.RoleSystemAdministrator {
+		return false
+	}
+	now := service.now().UTC()
+	return !session.IdleExpiresAt.IsZero() && session.IdleExpiresAt.After(now) && !session.AbsoluteExpiresAt.IsZero() && session.AbsoluteExpiresAt.After(now)
+}
+
+func validInvestigationCaseStatusFilter(status InvestigationCaseStatus) bool {
+	return status == "" || status == InvestigationCaseOpen || status == InvestigationCaseClosed
+}
+
 func (service *InvestigationService) IssueGrant(ctx context.Context, input IssueInvestigationGrantInput) (AccessGrant, error) {
 	if service == nil || service.repository == nil || service.newID == nil || strings.TrimSpace(input.RequestID) == "" || !input.Confirmed || !validInvestigationID(input.CaseID) {
 		return AccessGrant{}, ErrInvalidInvestigation
@@ -401,7 +447,7 @@ func (service *InvestigationService) IssueGrant(ctx context.Context, input Issue
 	if input.Session.IdentityID == "" || input.Session.SessionID == "" || input.Session.Role != access.RoleSystemAdministrator {
 		return AccessGrant{}, ErrInvestigationForbidden
 	}
-	if input.Session.AbsoluteExpiresAt.IsZero() || !input.Session.AbsoluteExpiresAt.After(now) {
+	if input.Session.IdleExpiresAt.IsZero() || !input.Session.IdleExpiresAt.After(now) || input.Session.AbsoluteExpiresAt.IsZero() || !input.Session.AbsoluteExpiresAt.After(now) {
 		return AccessGrant{}, ErrInvestigationForbidden
 	}
 	if input.Session.ReauthenticatedUntil == nil || !input.Session.ReauthenticatedUntil.After(now) {
@@ -439,7 +485,7 @@ func (service *InvestigationService) Close(ctx context.Context, input Investigat
 		return ErrInvalidInvestigation
 	}
 	now := service.now().UTC()
-	if input.ClosedAt.After(now) || input.Actor.IdentityID == "" || input.Actor.SessionID == "" || input.Actor.Role != access.RoleSystemAdministrator || input.Actor.AbsoluteExpiresAt.IsZero() || !input.Actor.AbsoluteExpiresAt.After(now) {
+	if input.ClosedAt.After(now) || input.Actor.IdentityID == "" || input.Actor.SessionID == "" || input.Actor.Role != access.RoleSystemAdministrator || input.Actor.IdleExpiresAt.IsZero() || !input.Actor.IdleExpiresAt.After(now) || input.Actor.AbsoluteExpiresAt.IsZero() || !input.Actor.AbsoluteExpiresAt.After(now) {
 		return ErrInvestigationForbidden
 	}
 	if input.Actor.ReauthenticatedUntil == nil || !input.Actor.ReauthenticatedUntil.After(now) {
@@ -471,27 +517,40 @@ func (service *InvestigationService) Close(ctx context.Context, input Investigat
 	return nil
 }
 
-func (service *InvestigationService) readCaseContent(ctx context.Context, auditID string, kind ContentKind, captureStatus CaptureStatus, now time.Time) (CaseContentView, string, bool) {
+func (service *InvestigationService) readCaseContent(ctx context.Context, auditID string, kind ContentKind, captureStatus CaptureStatus, now time.Time) (CaseContentView, string, bool, error) {
+	if captureStatus == CaptureStatusPending {
+		return CaseContentView{Status: ContentViewUnavailable}, "raw_content_unavailable", false, nil
+	}
 	record, err := service.repository.ReadRawContent(ctx, RawContentLookup{AuditID: auditID, ContentKind: kind, VisibleAt: now})
-	if err != nil || !record.ExpiresAt.After(now) {
-		return CaseContentView{Status: ContentViewUnavailable}, "raw_content_unavailable", false
+	if err != nil {
+		if errors.Is(err, ErrRawContentUnavailable) {
+			return CaseContentView{Status: ContentViewUnavailable}, "raw_content_unavailable", false, nil
+		}
+		return CaseContentView{Status: ContentViewUnavailable}, "raw_repository_unavailable", true, fmt.Errorf("read investigation raw content: %w", err)
+	}
+	if !record.ExpiresAt.After(now) {
+		return CaseContentView{Status: ContentViewUnavailable}, "raw_content_unavailable", false, nil
 	}
 	if record.AuditID != auditID || record.ContentKind != kind {
-		return CaseContentView{Status: ContentViewUnavailable}, "integrity_failed", true
+		return CaseContentView{Status: ContentViewUnavailable}, "integrity_failed", true, nil
 	}
 	bytes, err := service.decryptor.Decrypt(record.Content, rawViewEncryptionContext(record))
 	if err != nil {
 		clear(bytes)
-		return CaseContentView{Status: ContentViewUnavailable}, "decryption_failed", true
+		return CaseContentView{Status: ContentViewUnavailable}, "decryption_failed", true, nil
 	}
 	if captureStatus == CaptureStatusTruncated || captureStatus == CaptureStatusIncomplete {
-		return CaseContentView{Status: contentViewStatus(captureStatus), Fragment: boundedUTF8Fragment(bytes)}, "", false
+		fragment := boundedUTF8Fragment(bytes)
+		clear(bytes)
+		return CaseContentView{Status: contentViewStatus(captureStatus), Fragment: fragment}, "", false, nil
 	}
 	if !json.Valid(bytes) {
 		clear(bytes)
-		return CaseContentView{Status: ContentViewUnavailable}, "integrity_failed", true
+		return CaseContentView{Status: ContentViewUnavailable}, "integrity_failed", true, nil
 	}
-	return CaseContentView{Status: ContentViewComplete, JSON: json.RawMessage(append([]byte(nil), bytes...))}, "", false
+	jsonValue := json.RawMessage(append([]byte(nil), bytes...))
+	clear(bytes)
+	return CaseContentView{Status: ContentViewComplete, JSON: jsonValue}, "", false, nil
 }
 
 func contentViewStatus(status CaptureStatus) ContentViewStatus {

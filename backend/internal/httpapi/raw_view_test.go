@@ -126,12 +126,21 @@ func TestRawViewRouteIsSingleRecordOnlyWithoutSearchBulkOrExport(t *testing.T) {
 			}
 		}
 	}
-	if len(rawRoutes) != 1 {
-		t.Fatalf("raw routes = %+v, want exactly one", rawRoutes)
+	if len(rawRoutes) != 2 {
+		t.Fatalf("raw routes = %+v, want the existing and case-scoped single-record routes", rawRoutes)
 	}
-	route := rawRoutes[0]
-	if route.Name != RouteName("admin.audits.view_raw") || route.Method != MethodPost || route.Pattern != "/api/v1/audits/{auditID}/raw-views" || len(route.Roles) != 1 || route.Roles[0] != RoleSystemAdministrator {
-		t.Fatalf("raw route = %+v", route)
+	want := map[string]struct {
+		name    RouteName
+		pattern string
+	}{
+		"POST /api/v1/audits/{auditID}/raw-views":                              {name: RouteName("admin.audits.view_raw"), pattern: "/api/v1/audits/{auditID}/raw-views"},
+		"POST /api/v1/investigation-cases/{caseID}/audits/{auditID}/raw-views": {name: RouteName("admin.investigations.raw_view"), pattern: "/api/v1/investigation-cases/{caseID}/audits/{auditID}/raw-views"},
+	}
+	for _, route := range rawRoutes {
+		expected, ok := want[routeKey(route.Method, route.Pattern)]
+		if !ok || route.Name != expected.name || route.Pattern != expected.pattern || route.Method != MethodPost || len(route.Roles) != 1 || route.Roles[0] != RoleSystemAdministrator {
+			t.Fatalf("raw route = %+v", route)
+		}
 	}
 }
 

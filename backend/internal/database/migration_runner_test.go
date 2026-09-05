@@ -27,6 +27,9 @@ var requiredRecoveryTables = []string{
 	"public.usage_records",
 	"public.security_events",
 	"public.operational_state",
+	"public.investigation_cases",
+	"public.investigation_case_audits",
+	"public.investigation_access_grants",
 }
 
 func TestLoadMigrationRequestAcceptsVerifiedCurrentRecoveryManifest(t *testing.T) {
@@ -88,7 +91,7 @@ func TestLoadMigrationRequestRejectsInvalidBoundaryInputsWithoutLeakingValues(t 
 			name: "source version beyond image target",
 			values: map[string]string{
 				"N_API_P_DATABASE_URL":                      "postgres://database.internal/n_api_p",
-				"N_API_P_MIGRATION_EXPECTED_SOURCE_VERSION": "8",
+				"N_API_P_MIGRATION_EXPECTED_SOURCE_VERSION": "9",
 				"N_API_P_MIGRATION_RECOVERY_MANIFEST_PATH":  validPath,
 			},
 		},
@@ -219,6 +222,30 @@ func TestEmbeddedProductionMigrationsContainOnlyReviewedForwardFiles(t *testing.
 	}
 }
 
+func TestInvestigationMigrationUsesSingleCharacterLikeEscape(t *testing.T) {
+	content, err := fs.ReadFile(embeddedForwardMigrations, "migrations/000008_governed_investigations.up.sql")
+	if err != nil {
+		t.Fatalf("read investigation migration: %v", err)
+	}
+	if !strings.Contains(string(content), `LIKE 'investigation\_%' ESCAPE '\'`) {
+		t.Fatal("investigation case constraint must use a single-character LIKE escape")
+	}
+}
+
+func TestInvestigationCandidatesKeepAuditUUIDSnapshotsIndependentOfAuditRows(t *testing.T) {
+	content, err := fs.ReadFile(embeddedForwardMigrations, "migrations/000008_governed_investigations.up.sql")
+	if err != nil {
+		t.Fatalf("read investigation migration: %v", err)
+	}
+	source := string(content)
+	if !strings.Contains(source, "audit_id uuid NOT NULL") {
+		t.Fatal("investigation candidate snapshot must retain a non-null audit UUID")
+	}
+	if strings.Contains(source, "audit_id uuid NOT NULL REFERENCES audit_records") {
+		t.Fatal("investigation candidate snapshot must not cascade or restrict audit metadata cleanup")
+	}
+}
+
 func TestValidateProductionSchemaInventoryUsesVersionedExactAllowlist(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -227,7 +254,7 @@ func TestValidateProductionSchemaInventoryUsesVersionedExactAllowlist(t *testing
 	}{
 		{name: "empty source", version: 0, tables: nil},
 		{name: "empty baseline", version: 1, tables: []string{"schema_migrations"}},
-		{name: "target", version: 7, tables: append([]string{"schema_migrations", "audit_raw_content"}, unqualifiedTableNames(requiredRecoveryTables)...)},
+		{name: "target", version: 8, tables: append([]string{"schema_migrations", "audit_raw_content"}, unqualifiedTableNames(requiredRecoveryTables)...)},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
