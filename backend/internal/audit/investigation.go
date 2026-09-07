@@ -345,9 +345,11 @@ func (service *InvestigationService) Inspect(ctx context.Context, input CaseRawV
 		detail, outcome = responseDetail, access.SecurityEventFailure
 	}
 	if requestFatal || responseFatal {
+		clearCaseRawView(&view)
 		view = CaseRawView{}
 	}
 	if err := service.appendViewEvent(ctx, input, caseRecord, outcome, detail, now); err != nil {
+		clearCaseRawView(&view)
 		return CaseRawView{}, err
 	}
 	if requestFatal || responseFatal {
@@ -558,6 +560,18 @@ func contentViewStatus(status CaptureStatus) ContentViewStatus {
 		return ContentViewTruncated
 	}
 	return ContentViewIncomplete
+}
+
+func clearCaseRawView(view *CaseRawView) {
+	if view == nil {
+		return
+	}
+	clear(view.Request.JSON)
+	clear(view.Response.JSON)
+	view.Request.JSON = nil
+	view.Response.JSON = nil
+	view.Request.Fragment = ""
+	view.Response.Fragment = ""
 }
 
 func boundedUTF8Fragment(value []byte) string {

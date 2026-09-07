@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -278,6 +279,25 @@ func TestInvestigationServiceRejectsUnknownCaseListStatus(t *testing.T) {
 	}
 	if _, err := service.List(context.Background(), session, InvestigationCaseListFilter{Status: InvestigationCaseStatus("unexpected"), Limit: 20}); !errors.Is(err, ErrInvalidInvestigation) {
 		t.Fatalf("List() error = %v, want invalid investigation status", err)
+	}
+}
+
+func TestClearCaseRawViewClearsPlaintextBuffers(t *testing.T) {
+	requestBytes := []byte(`{"prompt":"synthetic"}`)
+	view := CaseRawView{
+		Request:  CaseContentView{Status: ContentViewComplete, JSON: json.RawMessage(requestBytes)},
+		Response: CaseContentView{Status: ContentViewTruncated, Fragment: `{"answer":"synthetic"}`},
+	}
+
+	clearCaseRawView(&view)
+
+	if view.Request.JSON != nil || view.Response.JSON != nil || view.Request.Fragment != "" || view.Response.Fragment != "" {
+		t.Fatalf("case raw view still retains plaintext: %+v", view)
+	}
+	for index, value := range requestBytes {
+		if value != 0 {
+			t.Fatalf("request plaintext byte %d = %d, want zeroed", index, value)
+		}
 	}
 }
 
