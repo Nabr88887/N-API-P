@@ -117,6 +117,7 @@ func NewMetrics() *Metrics {
 	metrics.SetDeletionLag(false, nil, nil, time.Time{})
 	metrics.SetBackgroundJobState("raw_cleanup", "unknown")
 	metrics.SetBackgroundJobState("verification_hash_purge", "unknown")
+	metrics.SetBackgroundJobState("metadata_cleanup", "unknown")
 	return metrics
 }
 
@@ -302,7 +303,7 @@ func metricGateState(value string) string {
 
 func metricJob(value string) string {
 	switch strings.TrimSpace(value) {
-	case "raw_cleanup", "verification_hash_purge":
+	case "raw_cleanup", "verification_hash_purge", "metadata_cleanup":
 		return strings.TrimSpace(value)
 	default:
 		return "unknown"

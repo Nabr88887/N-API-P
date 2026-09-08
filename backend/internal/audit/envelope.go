@@ -244,7 +244,7 @@ func associatedData(domain string, context EncryptionContext, keyVersion int) []
 		result = binary.BigEndian.AppendUint32(result, uint32(len(value)))
 		result = append(result, value...)
 	}
-	createdAt := context.CreatedAt.UTC()
+	createdAt := context.CreatedAt.UTC().Truncate(time.Microsecond)
 	result = binary.BigEndian.AppendUint64(result, uint64(createdAt.Unix()))
 	result = binary.BigEndian.AppendUint32(result, uint32(createdAt.Nanosecond()))
 	result = binary.BigEndian.AppendUint32(result, uint32(keyVersion))

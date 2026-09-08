@@ -23,11 +23,13 @@ export function InvestigationWorkspace({ client }: { client: AdminPortalClient }
   const [closeConfirmed, setCloseConfirmed] = useState(false)
   const [reauthOpen, setReauthOpen] = useState(false)
   const [reauthPassword, setReauthPassword] = useState('')
-  const pendingSensitiveAction = useRef<null | (() => Promise<void>)>(null)
+  const pendingSensitiveAction = useRef<null | { requestID: number; run: () => Promise<void> }>(null)
+  const reauthenticationRequest = useRef(0)
   const caseCursors = useRef(new Set<string>())
   const caseLoadRequest = useRef(0)
   const caseDetailRequest = useRef(0)
   const inspectRequest = useRef(0)
+  const grantRequest = useRef(0)
 
   const loadCases = useCallback(async () => {
     if (!client.listInvestigationCases) return
@@ -60,6 +62,7 @@ export function InvestigationWorkspace({ client }: { client: AdminPortalClient }
       const response = await client.createInvestigationCase!({ subject_identity_id: subject.trim(), policy_concern: concern.trim(), reason: reason.trim(), start_at: new Date(start).toISOString(), end_at: new Date(end).toISOString(), confirmed: true })
       const detailRequestID = ++caseDetailRequest.current
       inspectRequest.current += 1
+      grantRequest.current += 1
       setCases((current) => [response.case, ...current]); setSelected(response.case); setView(null); setCandidates([]); setGrantExpiresAt(response.grant.expires_at); setSubject(''); setConcern(''); setReason(''); setStart(''); setEnd(''); setCreateConfirmed(false)
       if (client.listInvestigationCandidates) {
         const page = await client.listInvestigationCandidates(response.case.id)
@@ -74,6 +77,8 @@ export function InvestigationWorkspace({ client }: { client: AdminPortalClient }
     if (!client.listInvestigationCandidates) return
     const detailRequestID = ++caseDetailRequest.current
     inspectRequest.current += 1
+    grantRequest.current += 1
+    dismissReauthentication()
     setSelected(item); setView(null); setCandidates([]); setGrantExpiresAt(''); setCloseConfirmed(false)
     try {
       const page = await client.listInvestigationCandidates(item.id)
@@ -101,8 +106,15 @@ export function InvestigationWorkspace({ client }: { client: AdminPortalClient }
   }
   async function renewGrant() {
     if (!selected || selected.status !== 'open' || !client.issueInvestigationGrant) return
-    const action = async () => { const grant = await client.issueInvestigationGrant!(selected.id); setGrantExpiresAt(grant.expires_at) }
-    try { await action(); setError('') } catch (failure: unknown) {
+    const caseID = selected.id
+    const requestID = ++grantRequest.current
+    const action = async () => {
+      if (requestID !== grantRequest.current) return
+      const grant = await client.issueInvestigationGrant!(caseID)
+      if (requestID === grantRequest.current && grant.case_id === caseID) setGrantExpiresAt(grant.expires_at)
+    }
+    try { await action(); if (requestID === grantRequest.current) setError('') } catch (failure: unknown) {
+      if (requestID !== grantRequest.current) return
       if (!deferForReauthentication(failure, action)) setError('Unable to renew access to this investigation case.')
     }
   }
@@ -124,6 +136,7 @@ export function InvestigationWorkspace({ client }: { client: AdminPortalClient }
       await client.closeInvestigationCase!(selected.id, disposition, note)
       const closed = { ...selected, status: 'closed' as const, disposition, closure_note: note }
       caseDetailRequest.current += 1; inspectRequest.current += 1
+      grantRequest.current += 1
       setSelected(closed); setCases((current) => current.map((item) => item.id === closed.id ? closed : item)); setView(null); setGrantExpiresAt(''); setNote(''); setCloseConfirmed(false)
     }
     try { await action(); setError('') } catch (failure: unknown) {
@@ -133,26 +146,40 @@ export function InvestigationWorkspace({ client }: { client: AdminPortalClient }
 
   function deferForReauthentication(failure: unknown, action: () => Promise<void>): boolean {
     if (errorCode(failure) !== 'REAUTHENTICATION_REQUIRED') return false
-    pendingSensitiveAction.current = action
+    const requestID = ++reauthenticationRequest.current
+    pendingSensitiveAction.current = { requestID, run: action }
     setReauthOpen(true)
     return true
+  }
+
+  function dismissReauthentication() {
+    reauthenticationRequest.current += 1
+    pendingSensitiveAction.current = null
+    setReauthOpen(false)
+    setReauthPassword('')
   }
 
   async function finishReauthentication(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!reauthPassword.trim() || !client.reauthenticate) return
-    const action = pendingSensitiveAction.current
-    pendingSensitiveAction.current = null
+    const pending = pendingSensitiveAction.current
+    if (!pending) return
     try {
       await client.reauthenticate(reauthPassword)
     } catch {
-      setError('Reauthentication failed.')
+      if (pending.requestID === reauthenticationRequest.current) setError('Reauthentication failed.')
       return
     }
+    if (pending.requestID !== reauthenticationRequest.current) return
+    pendingSensitiveAction.current = null
     setReauthOpen(false)
     setReauthPassword('')
-    if (!action) return
-    try { await action(); setError('') } catch { setError('The operation failed after reauthentication.') }
+    try {
+      await pending.run()
+      if (pending.requestID === reauthenticationRequest.current) setError('')
+    } catch {
+      if (pending.requestID === reauthenticationRequest.current) setError('The operation failed after reauthentication.')
+    }
   }
 
   function errorCode(failure: unknown): string {
@@ -184,6 +211,6 @@ export function InvestigationWorkspace({ client }: { client: AdminPortalClient }
     <div className="table-wrap" tabIndex={0}><table aria-label="Investigation cases"><thead><tr><th>Subject</th><th>Concern</th><th>Range</th><th>Status</th><th /></tr></thead><tbody>{cases.length ? cases.map((item) => <tr key={item.id}><td>{item.subject_identity_id}</td><td>{item.policy_concern}</td><td>{new Date(item.start_at).toLocaleString()} to {new Date(item.end_at).toLocaleString()}</td><td>{item.status}</td><td><button className="button button-secondary button-small" type="button" onClick={() => void openCase(item)}>Open case</button></td></tr>) : <tr><td colSpan={5} className="empty-row">No investigation cases.</td></tr>}</tbody></table></div>
     {casePagination.next_cursor && <div className="pagination-actions"><button className="button button-secondary" type="button" disabled={casePageLoading} onClick={() => void loadMoreCases()}>{casePageLoading ? 'Loading…' : 'Load more investigation cases'}</button></div>}
     {selected && <div className="investigation-detail"><div className="section-heading-row"><div><p className="section-kicker">Immutable candidate snapshot</p><h3>Case {selected.id}</h3>{grantExpiresAt && selected.status === 'open' && <p>Access expires {new Date(grantExpiresAt).toLocaleString()}</p>}</div>{selected.status === 'open' && client.issueInvestigationGrant && <button className="button button-secondary button-small" type="button" onClick={() => void renewGrant()}>{grantExpiresAt ? 'Renew access' : 'Authorize access'}</button>}</div><div className="table-wrap" tabIndex={0}><table aria-label="Investigation candidates"><thead><tr><th>Audit ID</th><th>Capture</th><th>Expires</th><th /></tr></thead><tbody>{candidates.map((candidate) => <tr key={candidate.audit_id}><td>{candidate.audit_id}</td><td>{candidate.capture_status}</td><td>{new Date(candidate.expires_at).toLocaleString()}</td><td><button className="button button-secondary button-small" type="button" disabled={selected.status !== 'open' || !grantExpiresAt} onClick={() => void inspect(candidate)}>View one record</button></td></tr>)}</tbody></table></div>{view && <div className="investigation-view"><h3>Record {view.audit_id}</h3><p>Request: {view.request.status}</p><pre>{view.request.json ? JSON.stringify(view.request.json, null, 2) : view.request.fragment ?? 'Unavailable'}</pre><p>Response: {view.response.status}</p><pre>{view.response.json ? JSON.stringify(view.response.json, null, 2) : view.response.fragment ?? 'Unavailable'}</pre></div>}{selected.status === 'open' && <div className="control-grid"><label className="field-label" htmlFor="investigation-disposition">Disposition</label><select id="investigation-disposition" value={disposition} onChange={(event) => setDisposition(event.target.value as InvestigationDisposition)}><option value="confirmed_violation">Confirmed violation</option><option value="no_violation">No violation</option><option value="inconclusive">Inconclusive</option></select><label className="field-label" htmlFor="investigation-note">Closure note</label><textarea id="investigation-note" maxLength={500} value={note} onChange={(event) => setNote(event.target.value)} /><label className="field-label" htmlFor="investigation-close-confirmed">I confirm this case closure</label><input id="investigation-close-confirmed" type="checkbox" checked={closeConfirmed} onChange={(event) => setCloseConfirmed(event.target.checked)} /><button className="button button-danger" type="button" disabled={!closeConfirmed} onClick={() => void closeCase()}>Close case</button></div>}</div>}
-    {reauthOpen && <ModalDialog ariaLabelledBy="investigation-reauth-title" onDismiss={() => { setReauthOpen(false); setReauthPassword(''); pendingSensitiveAction.current = null }} raised><div className="dialog-heading"><h2 id="investigation-reauth-title">Reauthenticate</h2></div><form className="dialog-form" onSubmit={(event) => void finishReauthentication(event)}><label className="field-label" htmlFor="investigation-reauth-password">Current password</label><input id="investigation-reauth-password" aria-label="Current password" type="password" autoComplete="current-password" value={reauthPassword} onChange={(event) => setReauthPassword(event.target.value)} required /><div className="dialog-actions"><button className="button button-secondary" type="button" onClick={() => { setReauthOpen(false); setReauthPassword(''); pendingSensitiveAction.current = null }}>Cancel</button><button className="button button-primary" type="submit">Reauthenticate and continue</button></div></form></ModalDialog>}
+    {reauthOpen && <ModalDialog ariaLabelledBy="investigation-reauth-title" onDismiss={dismissReauthentication} raised><div className="dialog-heading"><h2 id="investigation-reauth-title">Reauthenticate</h2></div><form className="dialog-form" onSubmit={(event) => void finishReauthentication(event)}><label className="field-label" htmlFor="investigation-reauth-password">Current password</label><input id="investigation-reauth-password" aria-label="Current password" type="password" autoComplete="current-password" value={reauthPassword} onChange={(event) => setReauthPassword(event.target.value)} required /><div className="dialog-actions"><button className="button button-secondary" type="button" onClick={dismissReauthentication}>Cancel</button><button className="button button-primary" type="submit">Reauthenticate and continue</button></div></form></ModalDialog>}
   </section>
 }

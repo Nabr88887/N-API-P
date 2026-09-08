@@ -202,7 +202,7 @@ func TestEnvelopeAuthenticationRejectsTamperingAndCrossRecordSubstitution(t *tes
 		"owner kind":                {record: record, context: serviceEncryptionContext()},
 		"identity":                  {record: record, context: withContext(context, func(value *EncryptionContext) { value.IdentityID = "employee-other" })},
 		"team":                      {record: record, context: withContext(context, func(value *EncryptionContext) { value.TeamID = "team-other" })},
-		"created time":              {record: record, context: withContext(context, func(value *EncryptionContext) { value.CreatedAt = value.CreatedAt.Add(time.Nanosecond) })},
+		"created time":              {record: record, context: withContext(context, func(value *EncryptionContext) { value.CreatedAt = value.CreatedAt.Add(time.Microsecond) })},
 		"service account":           {record: serviceRecord, context: withContext(serviceContext, func(value *EncryptionContext) { value.ServiceAccountID = "service-other" })},
 		"responsible identity":      {record: serviceRecord, context: withContext(serviceContext, func(value *EncryptionContext) { value.ResponsibleIdentityID = "employee-other" })},
 	}
@@ -226,6 +226,28 @@ func TestEnvelopeAuthenticationRejectsTamperingAndCrossRecordSubstitution(t *tes
 				t.Fatalf("Decrypt() = (%q, %v), want nil authentication failure", plaintext, err)
 			}
 		})
+	}
+}
+
+func TestEnvelopeDecryptsAfterPostgresTimestampPrecisionRoundTrip(t *testing.T) {
+	service := newDeterministicEnvelopeService(t, 1, map[int][]byte{
+		1: bytes.Repeat([]byte{0x41}, 32),
+	}, sequentialBytes(64))
+	createdAt := time.Date(2026, time.September, 8, 9, 10, 11, 123456789, time.UTC)
+	context := personalEncryptionContext()
+	context.CreatedAt = createdAt
+	record, err := service.Encrypt([]byte(`{"record":"precision"}`), context)
+	if err != nil {
+		t.Fatalf("encrypt record: %v", err)
+	}
+
+	context.CreatedAt = createdAt.Truncate(time.Microsecond)
+	plaintext, err := service.Decrypt(record, context)
+	if err != nil {
+		t.Fatalf("decrypt after PostgreSQL timestamp round trip: %v", err)
+	}
+	if string(plaintext) != `{"record":"precision"}` {
+		t.Fatalf("plaintext = %s", plaintext)
 	}
 }
 

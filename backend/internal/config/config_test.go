@@ -24,6 +24,52 @@ func TestLoadUsesDocumentedDefaults(t *testing.T) {
 	if got := cfg.NewAPIBaseURL.String(); got != "https://newapi.internal" {
 		t.Fatalf("NewAPIBaseURL = %q, want %q", got, "https://newapi.internal")
 	}
+	if len(cfg.OperatorProxyCIDRs) != 0 {
+		t.Fatalf("OperatorProxyCIDRs = %v, want none by default", cfg.OperatorProxyCIDRs)
+	}
+}
+
+func TestLoadParsesOperatorProxyCIDRs(t *testing.T) {
+	values := validEnvironment()
+	values["N_API_P_OPERATOR_PROXY_CIDRS"] = "172.20.0.0/24, fd00:1234::/64"
+
+	cfg, err := Load(mapLookup(values))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.OperatorProxyCIDRs) != 2 ||
+		cfg.OperatorProxyCIDRs[0].String() != "172.20.0.0/24" ||
+		cfg.OperatorProxyCIDRs[1].String() != "fd00:1234::/64" {
+		t.Fatalf("OperatorProxyCIDRs = %v, want configured IPv4 and IPv6 networks", cfg.OperatorProxyCIDRs)
+	}
+}
+
+func TestLoadRejectsInvalidOperatorProxyCIDRsWithoutEchoingValue(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "invalid CIDR", value: "proxy.internal"},
+		{name: "empty list entry", value: "172.20.0.0/24,,172.21.0.0/24"},
+		{name: "too many entries", value: strings.Repeat("172.20.0.1/32,", 16) + "172.20.0.2/32"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			values := validEnvironment()
+			values["N_API_P_OPERATOR_PROXY_CIDRS"] = test.value
+			_, err := Load(mapLookup(values))
+			if err == nil {
+				t.Fatal("Load() error = nil, want operator proxy CIDR validation error")
+			}
+			if !strings.Contains(err.Error(), "N_API_P_OPERATOR_PROXY_CIDRS") {
+				t.Fatalf("Load() error = %q, want variable name", err)
+			}
+			if strings.Contains(err.Error(), test.value) {
+				t.Fatalf("Load() error echoes configuration value: %q", err)
+			}
+		})
+	}
 }
 
 func TestLoadRejectsMissingRequiredConfiguration(t *testing.T) {

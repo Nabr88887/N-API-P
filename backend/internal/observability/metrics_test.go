@@ -19,6 +19,7 @@ func TestMetricsExposeREDAndOperationalSignalsWithOnlyAllowlistedLabels(t *testi
 	overdue := oldest.Add(time.Hour)
 	metrics.SetDeletionLag(true, &oldest, &overdue, overdue.Add(time.Minute))
 	metrics.SetBackgroundJobState("raw_cleanup", "failed")
+	metrics.SetBackgroundJobState("metadata_cleanup", "failed")
 
 	output := gatherMetrics(t, metrics)
 	for _, name := range []string{
@@ -46,6 +47,9 @@ func TestMetricsExposeREDAndOperationalSignalsWithOnlyAllowlistedLabels(t *testi
 		if strings.Contains(output, forbiddenLabel+"=") {
 			t.Fatalf("metrics output exposed forbidden label %q:\n%s", forbiddenLabel, output)
 		}
+	}
+	if !strings.Contains(output, `job="metadata_cleanup",state="failed"`) {
+		t.Fatalf("metrics output missing metadata cleanup state:\n%s", output)
 	}
 }
 

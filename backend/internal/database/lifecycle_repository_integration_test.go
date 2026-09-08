@@ -114,6 +114,83 @@ func TestRepositoryLifecycleCleanupPersistsLagAndRetainsMetadata(t *testing.T) {
 	}
 }
 
+func TestRepositoryRawCleanupBatchesAndRecomputesRemainingLag(t *testing.T) {
+	db, _ := migrateRepositorySchema(t)
+	fixture := insertAuditPolicyFixture(t, db)
+	repository := NewRepository(db)
+	cleanupAt := fixture.now.Add(3 * time.Hour)
+	createdAt := cleanupAt.Add(-3 * time.Hour)
+	overdueExpiresAt := cleanupAt.Add(-2 * time.Hour)
+	recentExpiresAt := cleanupAt.Add(-time.Minute)
+	rowCount := audit.RawContentCleanupBatchSize + 1
+
+	mustExec(t, db, `
+INSERT INTO audit_records (
+    id, request_id, key_id, owner_kind, identity_id, team_id, model_id,
+    capture_status, outcome, observed_request_bytes, observed_response_bytes,
+    created_at, updated_at
+)
+SELECT
+    md5('raw-cleanup-audit-' || value::text)::uuid,
+    md5('raw-cleanup-request-' || value::text)::uuid,
+    $1, 'personal', $2, $3, 'raw-cleanup-batch-test',
+    'pending', 'pending', 1, 0, $4, $4
+FROM generate_series(1, $5) AS series(value)`, fixture.keyID, fixture.identityID, fixture.teamID, createdAt, rowCount)
+	mustExec(t, db, `
+INSERT INTO audit_raw_content (
+    audit_id, content_kind, compression, ciphertext, cipher_nonce,
+    wrapped_data_key, wrap_nonce, key_version, created_at, expires_at
+)
+SELECT
+    md5('raw-cleanup-audit-' || value::text)::uuid,
+    'request', 'gzip', decode(repeat('aa', 17), 'hex'), decode(repeat('00', 12), 'hex'),
+    decode(repeat('bb', 17), 'hex'), decode(repeat('11', 12), 'hex'), 1, $1,
+    CASE WHEN value <= $2 THEN $3 ELSE $4 END
+FROM generate_series(1, $5) AS series(value)`, createdAt, audit.RawContentCleanupBatchSize, overdueExpiresAt, recentExpiresAt, rowCount)
+
+	lag, err := repository.ObserveDeletionLag(context.Background(), cleanupAt)
+	if err != nil {
+		t.Fatalf("ObserveDeletionLag() error = %v", err)
+	}
+	if !lag.Critical {
+		t.Fatalf("deletion lag = %+v, want critical before batched cleanup", lag)
+	}
+	deleted, err := repository.DeleteExpiredRawContent(context.Background(), cleanupAt)
+	if err != nil {
+		t.Fatalf("DeleteExpiredRawContent() first batch error = %v", err)
+	}
+	if deleted != audit.RawContentCleanupBatchSize {
+		t.Fatalf("first deleted rows = %d, want %d", deleted, audit.RawContentCleanupBatchSize)
+	}
+
+	var remaining int
+	var overdue sql.NullTime
+	if err := db.QueryRow(`SELECT count(*) FROM audit_raw_content WHERE expires_at <= $1`, cleanupAt).Scan(&remaining); err != nil {
+		t.Fatalf("count remaining raw rows: %v", err)
+	}
+	if err := db.QueryRow(`SELECT deletion_overdue_since FROM operational_state WHERE id = 1`).Scan(&overdue); err != nil {
+		t.Fatalf("read recomputed deletion lag: %v", err)
+	}
+	if remaining != 1 || overdue.Valid {
+		t.Fatalf("remaining cleanup state = (%d, %v), want one recent expired row and no overdue state", remaining, overdue)
+	}
+	var recoveryEvents int
+	if err := db.QueryRow(`SELECT count(*) FROM security_events WHERE event_type = 'operational_fault' AND detail_code = 'raw_deletion_overdue' AND outcome = 'success'`).Scan(&recoveryEvents); err != nil {
+		t.Fatalf("count deletion recovery events: %v", err)
+	}
+	if recoveryEvents != 1 {
+		t.Fatalf("deletion recovery events = %d, want 1", recoveryEvents)
+	}
+
+	deleted, err = repository.DeleteExpiredRawContent(context.Background(), cleanupAt)
+	if err != nil {
+		t.Fatalf("DeleteExpiredRawContent() final batch error = %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("final deleted rows = %d, want 1", deleted)
+	}
+}
+
 func TestRepositoryDeletionLagBecomesCriticalOnlyAfterOneHour(t *testing.T) {
 	db, _ := migrateRepositorySchema(t)
 	fixture := insertAuditPolicyFixture(t, db)

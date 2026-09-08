@@ -186,4 +186,116 @@ describe('InvestigationWorkspace', () => {
     expect(screen.getByText('Record audit-b')).toBeInTheDocument()
     expect(screen.queryByText('Record audit-a')).not.toBeInTheDocument()
   })
+
+  it('ignores a grant response after another case is selected', async () => {
+    const user = userEvent.setup()
+    const firstCase = { id: 'case-grant-a', subject_identity_id: 'employee-a', policy_concern: 'token use', reason: 'review', start_at: '2026-09-04T00:00:00Z', end_at: '2026-09-05T00:00:00Z', status: 'open' as const, created_by: 'admin-1', created_at: '2026-09-05T02:00:00Z' }
+    const secondCase = { ...firstCase, id: 'case-grant-b', subject_identity_id: 'employee-b', created_at: '2026-09-05T01:00:00Z' }
+    let resolveGrant!: (value: { case_id: string; expires_at: string }) => void
+    const grant = new Promise<{ case_id: string; expires_at: string }>((resolve) => { resolveGrant = resolve })
+    const client = {
+      listInvestigationCases: vi.fn().mockResolvedValue({ data: [firstCase, secondCase], pagination: { has_more: false } }),
+      listInvestigationCandidates: vi.fn().mockResolvedValue({ data: [], pagination: { has_more: false } }),
+      issueInvestigationGrant: vi.fn().mockReturnValue(grant),
+    } as unknown as AdminPortalClient
+    render(<InvestigationWorkspace client={client} />)
+
+    const openButtons = await screen.findAllByRole('button', { name: 'Open case' })
+    await user.click(openButtons[0])
+    await user.click(await screen.findByRole('button', { name: 'Authorize access' }))
+    await user.click(openButtons[1])
+    resolveGrant({ case_id: firstCase.id, expires_at: '2099-09-05T01:30:00Z' })
+    await act(async () => { await grant })
+
+    expect(screen.getByText(`Case ${secondCase.id}`)).toBeInTheDocument()
+    expect(screen.queryByText(/Access expires/)).not.toBeInTheDocument()
+  })
+
+  it('ignores a grant reauthentication failure after another case is selected', async () => {
+    const user = userEvent.setup()
+    const firstCase = { id: 'case-grant-failure-a', subject_identity_id: 'employee-a', policy_concern: 'token use', reason: 'review', start_at: '2026-09-04T00:00:00Z', end_at: '2026-09-05T00:00:00Z', status: 'open' as const, created_by: 'admin-1', created_at: '2026-09-05T02:00:00Z' }
+    const secondCase = { ...firstCase, id: 'case-grant-failure-b', subject_identity_id: 'employee-b', created_at: '2026-09-05T01:00:00Z' }
+    let rejectGrant!: (reason: unknown) => void
+    const grant = new Promise<never>((_, reject) => { rejectGrant = reject })
+    const client = {
+      listInvestigationCases: vi.fn().mockResolvedValue({ data: [firstCase, secondCase], pagination: { has_more: false } }),
+      listInvestigationCandidates: vi.fn().mockResolvedValue({ data: [], pagination: { has_more: false } }),
+      issueInvestigationGrant: vi.fn().mockReturnValue(grant),
+    } as unknown as AdminPortalClient
+    render(<InvestigationWorkspace client={client} />)
+
+    const openButtons = await screen.findAllByRole('button', { name: 'Open case' })
+    await user.click(openButtons[0])
+    await user.click(await screen.findByRole('button', { name: 'Authorize access' }))
+    await user.click(openButtons[1])
+    await act(async () => {
+      rejectGrant(new AdminAPIError('REAUTHENTICATION_REQUIRED'))
+      await Promise.resolve()
+    })
+
+    expect(screen.getByText(`Case ${secondCase.id}`)).toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Reauthenticate' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('dismisses pending grant reauthentication when another case is selected', async () => {
+    const user = userEvent.setup()
+    const firstCase = { id: 'case-pending-reauth-a', subject_identity_id: 'employee-a', policy_concern: 'token use', reason: 'review', start_at: '2026-09-04T00:00:00Z', end_at: '2026-09-05T00:00:00Z', status: 'open' as const, created_by: 'admin-1', created_at: '2026-09-05T02:00:00Z' }
+    const secondCase = { ...firstCase, id: 'case-pending-reauth-b', subject_identity_id: 'employee-b', created_at: '2026-09-05T01:00:00Z' }
+    const client = {
+      listInvestigationCases: vi.fn().mockResolvedValue({ data: [firstCase, secondCase], pagination: { has_more: false } }),
+      listInvestigationCandidates: vi.fn()
+        .mockResolvedValueOnce({ data: [], pagination: { has_more: false } })
+        .mockRejectedValueOnce(new Error('candidate lookup failed')),
+      issueInvestigationGrant: vi.fn().mockRejectedValue(new AdminAPIError('REAUTHENTICATION_REQUIRED')),
+    } as unknown as AdminPortalClient
+    render(<InvestigationWorkspace client={client} />)
+
+    const openButtons = await screen.findAllByRole('button', { name: 'Open case' })
+    await user.click(openButtons[0])
+    await user.click(await screen.findByRole('button', { name: 'Authorize access' }))
+    expect(await screen.findByRole('dialog', { name: 'Reauthenticate' })).toBeInTheDocument()
+
+    await user.click(openButtons[1])
+
+    expect(await screen.findByText(`Case ${secondCase.id}`)).toBeInTheDocument()
+    expect(await screen.findByRole('alert')).toHaveTextContent('Unable to open or authorize this investigation case.')
+    expect(screen.queryByRole('dialog', { name: 'Reauthenticate' })).not.toBeInTheDocument()
+    expect(client.issueInvestigationGrant).toHaveBeenCalledTimes(1)
+  })
+
+  it('preserves the selected case state when submitted reauthentication finishes late', async () => {
+    const user = userEvent.setup()
+    const firstCase = { id: 'case-submitted-reauth-a', subject_identity_id: 'employee-a', policy_concern: 'token use', reason: 'review', start_at: '2026-09-04T00:00:00Z', end_at: '2026-09-05T00:00:00Z', status: 'open' as const, created_by: 'admin-1', created_at: '2026-09-05T02:00:00Z' }
+    const secondCase = { ...firstCase, id: 'case-submitted-reauth-b', subject_identity_id: 'employee-b', created_at: '2026-09-05T01:00:00Z' }
+    let resolveReauthentication!: () => void
+    const reauthentication = new Promise<void>((resolve) => { resolveReauthentication = resolve })
+    const client = {
+      listInvestigationCases: vi.fn().mockResolvedValue({ data: [firstCase, secondCase], pagination: { has_more: false } }),
+      listInvestigationCandidates: vi.fn()
+        .mockResolvedValueOnce({ data: [], pagination: { has_more: false } })
+        .mockRejectedValueOnce(new Error('candidate lookup failed')),
+      issueInvestigationGrant: vi.fn().mockRejectedValue(new AdminAPIError('REAUTHENTICATION_REQUIRED')),
+      reauthenticate: vi.fn().mockReturnValue(reauthentication),
+    } as unknown as AdminPortalClient
+    render(<InvestigationWorkspace client={client} />)
+
+    const openButtons = await screen.findAllByRole('button', { name: 'Open case' })
+    await user.click(openButtons[0])
+    await user.click(await screen.findByRole('button', { name: 'Authorize access' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Reauthenticate' })
+    await user.type(within(dialog).getByLabelText('Current password'), 'current-password')
+    await user.click(within(dialog).getByRole('button', { name: 'Reauthenticate and continue' }))
+
+    await user.click(openButtons[1])
+    expect(await screen.findByRole('alert')).toHaveTextContent('Unable to open or authorize this investigation case.')
+    await act(async () => {
+      resolveReauthentication()
+      await reauthentication
+    })
+
+    expect(screen.getByText(`Case ${secondCase.id}`)).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('Unable to open or authorize this investigation case.')
+    expect(client.issueInvestigationGrant).toHaveBeenCalledTimes(1)
+  })
 })

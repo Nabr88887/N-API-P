@@ -17,7 +17,7 @@ import (
 func TestRepositoryRawViewDecryptsBothContentKindsAndAuditsSuccess(t *testing.T) {
 	db, _ := migrateRepositorySchema(t)
 	fixture := insertAuditPolicyFixture(t, db)
-	now := time.Now().UTC().Truncate(time.Microsecond)
+	now := time.Date(2026, time.September, 8, 9, 10, 11, 123456789, time.UTC)
 	createdAt := now.Add(-time.Minute)
 	expiresAt := now.Add(time.Hour)
 	key := bytes.Repeat([]byte{0x61}, 32)

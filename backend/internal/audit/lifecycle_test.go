@@ -25,11 +25,102 @@ func TestLifecycleJobRunOnceObservesLagBeforeCleanupAndPurgesRevokedHashes(t *te
 	if err != nil {
 		t.Fatalf("RunOnce() error = %v", err)
 	}
-	if got := repository.calls; len(got) != 4 || got[0] != "observe" || got[1] != "delete" || got[2] != "purge" || got[3] != "metadata" {
-		t.Fatalf("repository calls = %v, want observe/delete/purge/metadata", got)
+	if got := repository.calls; len(got) != 5 || got[0] != "observe" || got[1] != "delete" || got[2] != "observe" || got[3] != "purge" || got[4] != "metadata" {
+		t.Fatalf("repository calls = %v, want observe/delete/observe/purge/metadata", got)
 	}
 	if result.DeletedRawRows != 4 || result.PurgedVerificationHashes != 2 || result.PurgedMetadata.UsageRows != 3 || result.PurgedMetadata.SecurityEventRows != 2 || result.PurgedMetadata.AuditRows != 1 || !result.DeletionLag.Critical || !result.CompletedAt.Equal(now) {
 		t.Fatalf("cleanup result = %+v", result)
+	}
+}
+
+func TestLifecycleJobRunOnceReturnsLagAfterCleanup(t *testing.T) {
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	oldestExpiredAt := now.Add(-2 * time.Hour)
+	repository := &lifecycleRepositoryFake{
+		observeLags: []DeletionLagState{
+			{Critical: true, OldestExpiredAt: &oldestExpiredAt, ObservedAt: now},
+			{Critical: false, ObservedAt: now},
+		},
+		deletedRawRows: 1,
+	}
+	job, err := NewLifecycleJob(repository)
+	if err != nil {
+		t.Fatalf("NewLifecycleJob() error = %v", err)
+	}
+
+	result, err := job.RunOnce(context.Background(), now)
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if result.DeletionLag.Critical || result.DeletionLag.OldestExpiredAt != nil {
+		t.Fatalf("deletion lag = %+v, want refreshed non-critical state", result.DeletionLag)
+	}
+	wantCalls := []string{"observe", "delete", "observe", "purge", "metadata"}
+	if len(repository.calls) != len(wantCalls) {
+		t.Fatalf("repository calls = %v, want %v", repository.calls, wantCalls)
+	}
+	for index := range wantCalls {
+		if repository.calls[index] != wantCalls[index] {
+			t.Fatalf("repository calls = %v, want %v", repository.calls, wantCalls)
+		}
+	}
+}
+
+func TestLifecycleJobDrainsFullRawCleanupBatchesBeforeOtherPurges(t *testing.T) {
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	repository := &lifecycleRepositoryFake{
+		deletedRawBatches: []int64{RawContentCleanupBatchSize, RawContentCleanupBatchSize, 7},
+	}
+	job, err := NewLifecycleJob(repository)
+	if err != nil {
+		t.Fatalf("NewLifecycleJob() error = %v", err)
+	}
+
+	result, err := job.RunOnce(context.Background(), now)
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if result.DeletedRawRows != 2*RawContentCleanupBatchSize+7 {
+		t.Fatalf("deleted raw rows = %d, want %d", result.DeletedRawRows, 2*RawContentCleanupBatchSize+7)
+	}
+	wantCalls := []string{"observe", "delete", "delete", "delete", "observe", "purge", "metadata"}
+	if len(repository.calls) != len(wantCalls) {
+		t.Fatalf("repository calls = %v, want %v", repository.calls, wantCalls)
+	}
+	for index := range wantCalls {
+		if repository.calls[index] != wantCalls[index] {
+			t.Fatalf("repository calls = %v, want %v", repository.calls, wantCalls)
+		}
+	}
+}
+
+func TestLifecycleJobBoundsRawCleanupDrain(t *testing.T) {
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	fullBatches := make([]int64, rawContentCleanupMaxBatches+1)
+	for index := range fullBatches {
+		fullBatches[index] = RawContentCleanupBatchSize
+	}
+	repository := &lifecycleRepositoryFake{deletedRawBatches: fullBatches}
+	job, err := NewLifecycleJob(repository)
+	if err != nil {
+		t.Fatalf("NewLifecycleJob() error = %v", err)
+	}
+
+	result, err := job.RunOnce(context.Background(), now)
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if result.DeletedRawRows != int64(rawContentCleanupMaxBatches)*RawContentCleanupBatchSize {
+		t.Fatalf("deleted raw rows = %d, want bounded drain of %d", result.DeletedRawRows, int64(rawContentCleanupMaxBatches)*RawContentCleanupBatchSize)
+	}
+	deleteCalls := 0
+	for _, call := range repository.calls {
+		if call == "delete" {
+			deleteCalls++
+		}
+	}
+	if deleteCalls != rawContentCleanupMaxBatches {
+		t.Fatalf("delete calls = %d, want %d", deleteCalls, rawContentCleanupMaxBatches)
 	}
 }
 
@@ -51,7 +142,7 @@ func TestLifecycleJobStopsBeforeDestructiveStepsWhenLagObservationFails(t *testi
 
 func TestLifecycleJobRunsImmediatelyAndEveryFifteenMinutes(t *testing.T) {
 	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
-	repository := &lifecycleRepositoryFake{observed: make(chan time.Time, 2)}
+	repository := &lifecycleRepositoryFake{observed: make(chan time.Time, 4)}
 	job, err := NewLifecycleJob(repository)
 	if err != nil {
 		t.Fatalf("NewLifecycleJob() error = %v", err)
@@ -72,11 +163,17 @@ func TestLifecycleJobRunsImmediatelyAndEveryFifteenMinutes(t *testing.T) {
 	if observed := receiveLifecycleTime(t, repository.observed); !observed.Equal(now) {
 		t.Fatalf("immediate run = %v, want %v", observed, now)
 	}
+	if observed := receiveLifecycleTime(t, repository.observed); !observed.Equal(now) {
+		t.Fatalf("immediate post-cleanup observation = %v, want %v", observed, now)
+	}
 	next := now.Add(CleanupInterval)
 	current = next
 	ticker.ticks <- now
 	if observed := receiveLifecycleTime(t, repository.observed); !observed.Equal(next) {
 		t.Fatalf("scheduled run = %v, want %v", observed, next)
+	}
+	if observed := receiveLifecycleTime(t, repository.observed); !observed.Equal(next) {
+		t.Fatalf("scheduled post-cleanup observation = %v, want %v", observed, next)
 	}
 	cancel()
 	if err := <-done; err != nil {
@@ -90,7 +187,7 @@ func TestLifecycleJobRunsImmediatelyAndEveryFifteenMinutes(t *testing.T) {
 func TestLifecycleJobRetriesAfterAFailedRun(t *testing.T) {
 	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
 	repository := &lifecycleRepositoryFake{
-		observed:      make(chan time.Time, 2),
+		observed:      make(chan time.Time, 3),
 		observeErrors: []error{errors.New("synthetic metadata failure"), nil},
 	}
 	job, err := NewLifecycleJob(repository)
@@ -113,6 +210,9 @@ func TestLifecycleJobRetriesAfterAFailedRun(t *testing.T) {
 	if observed := receiveLifecycleTime(t, repository.observed); !observed.Equal(current) {
 		t.Fatalf("retry run = %v, want %v", observed, current)
 	}
+	if observed := receiveLifecycleTime(t, repository.observed); !observed.Equal(current) {
+		t.Fatalf("retry post-cleanup observation = %v, want %v", observed, current)
+	}
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -131,8 +231,10 @@ func receiveLifecycleTime(t *testing.T, values <-chan time.Time) time.Time {
 }
 
 type lifecycleRepositoryFake struct {
-	lag            DeletionLagState
-	deletedRawRows int64
+	lag               DeletionLagState
+	observeLags       []DeletionLagState
+	deletedRawRows    int64
+	deletedRawBatches []int64
 	purgedHashes   int64
 	purgedMetadata MetadataPurgeResult
 	observeErr     error
@@ -153,17 +255,25 @@ func (repository *lifecycleRepositoryFake) ObserveDeletionLag(_ context.Context,
 	if repository.observed != nil {
 		repository.observed <- observedAt
 	}
-	if repository.observeCalls < len(repository.observeErrors) {
-		err := repository.observeErrors[repository.observeCalls]
-		repository.observeCalls++
-		return repository.lag, err
-	}
+	index := repository.observeCalls
 	repository.observeCalls++
-	return repository.lag, repository.observeErr
+	lag := repository.lag
+	if index < len(repository.observeLags) {
+		lag = repository.observeLags[index]
+	}
+	if index < len(repository.observeErrors) {
+		return lag, repository.observeErrors[index]
+	}
+	return lag, repository.observeErr
 }
 
 func (repository *lifecycleRepositoryFake) DeleteExpiredRawContent(context.Context, time.Time) (int64, error) {
 	repository.calls = append(repository.calls, "delete")
+	if len(repository.deletedRawBatches) > 0 {
+		deleted := repository.deletedRawBatches[0]
+		repository.deletedRawBatches = repository.deletedRawBatches[1:]
+		return deleted, repository.deleteErr
+	}
 	return repository.deletedRawRows, repository.deleteErr
 }
 

@@ -34,3 +34,27 @@ func TestMetadataPurgeQueriesAreBounded(t *testing.T) {
 		t.Fatal("investigation case purge must only remove closed cases past the closure cutoff")
 	}
 }
+
+func TestRawContentPurgeQueryIsBoundedAndLockSafe(t *testing.T) {
+	for _, required := range []string{
+		"ORDER BY expires_at, audit_id, content_kind",
+		"FOR UPDATE SKIP LOCKED",
+		"LIMIT $2",
+	} {
+		if !strings.Contains(deleteExpiredRawContentSQL, required) {
+			t.Fatalf("raw-content purge query missing %q", required)
+		}
+	}
+	for _, required := range []string{
+		"min(expires_at)",
+		"oldest_expired_at < $1 - INTERVAL '1 hour'",
+		"oldest_expired_at + INTERVAL '1 hour'",
+	} {
+		if !strings.Contains(markLifecycleCleanupSQL, required) {
+			t.Fatalf("raw-content cleanup state query missing %q", required)
+		}
+	}
+	if strings.Contains(markLifecycleCleanupSQL, "THEN deletion_overdue_since") {
+		t.Fatal("raw-content cleanup must recompute overdue state from the remaining oldest row")
+	}
+}

@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"errors"
+	"net"
+	"net/http"
 	"testing"
 	"time"
 )
@@ -46,5 +48,51 @@ func TestApplicationStartRejectsMissingAuditRecovery(t *testing.T) {
 	application := &Application{}
 	if err := application.Start(context.Background()); !errors.Is(err, ErrInvalidApplication) {
 		t.Fatalf("Start() error = %v, want ErrInvalidApplication", err)
+	}
+}
+
+func TestTrustedOperatorRequestAllowsOnlyLoopbackPeers(t *testing.T) {
+	authorize := trustedOperatorRequest(nil)
+	tests := []struct {
+		name       string
+		remoteAddr string
+		want       bool
+	}{
+		{name: "IPv4 loopback", remoteAddr: "127.0.0.1:1234", want: true},
+		{name: "IPv6 loopback", remoteAddr: "[::1]:1234", want: true},
+		{name: "private network", remoteAddr: "10.20.30.40:1234"},
+		{name: "link local", remoteAddr: "169.254.1.2:1234"},
+		{name: "invalid address", remoteAddr: "operator.internal:1234"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := &http.Request{RemoteAddr: test.remoteAddr}
+			if got := authorize(request); got != test.want {
+				t.Fatalf("authorize(%q) = %t, want %t", test.remoteAddr, got, test.want)
+			}
+		})
+	}
+	if authorize(nil) {
+		t.Fatal("authorize(nil) = true, want false")
+	}
+}
+
+func TestTrustedOperatorRequestAllowsOnlyConfiguredImmediateProxyPeer(t *testing.T) {
+	_, trustedProxy, err := net.ParseCIDR("172.20.0.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorize := trustedOperatorRequest([]*net.IPNet{trustedProxy})
+
+	trusted := &http.Request{RemoteAddr: "172.20.0.12:54321"}
+	trusted.Header = http.Header{"X-Forwarded-For": []string{"203.0.113.8"}}
+	if !authorize(trusted) {
+		t.Fatal("configured immediate proxy peer was rejected")
+	}
+
+	spoofed := &http.Request{RemoteAddr: "10.20.30.40:54321"}
+	spoofed.Header = http.Header{"X-Forwarded-For": []string{"127.0.0.1"}}
+	if authorize(spoofed) {
+		t.Fatal("untrusted immediate peer was authorized through X-Forwarded-For")
 	}
 }

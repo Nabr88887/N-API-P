@@ -254,6 +254,9 @@ func TestValidateProductionSchemaInventoryUsesVersionedExactAllowlist(t *testing
 	}{
 		{name: "empty source", version: 0, tables: nil},
 		{name: "empty baseline", version: 1, tables: []string{"schema_migrations"}},
+		{name: "metadata before investigations", version: 3, tables: append([]string{"schema_migrations", "audit_raw_content"}, unqualifiedTableNames(requiredRecoveryTables[:12])...)},
+		{name: "metadata retention", version: 6, tables: append([]string{"schema_migrations", "audit_raw_content"}, unqualifiedTableNames(requiredRecoveryTables[:12])...)},
+		{name: "metadata hardening", version: 7, tables: append([]string{"schema_migrations", "audit_raw_content"}, unqualifiedTableNames(requiredRecoveryTables[:12])...)},
 		{name: "target", version: 8, tables: append([]string{"schema_migrations", "audit_raw_content"}, unqualifiedTableNames(requiredRecoveryTables)...)},
 	}
 	for _, test := range tests {
@@ -407,11 +410,19 @@ func mapLookup(values map[string]string) func(string) (string, bool) {
 }
 
 func validRecoveryManifest(createdAt time.Time, migrationVersion uint) map[string]any {
+	includedTables := requiredRecoveryTables
+	if migrationVersion <= 1 {
+		includedTables = nil
+	} else if migrationVersion == 2 {
+		includedTables = requiredRecoveryTables[:7]
+	} else if migrationVersion <= 7 {
+		includedTables = requiredRecoveryTables[:12]
+	}
 	return map[string]any{
 		"backup_id":              "backup-20260822-070000",
 		"created_at":             createdAt.Format(time.RFC3339),
 		"migration_version":      migrationVersion,
-		"included_tables":        slices.Clone(requiredRecoveryTables),
+		"included_tables":        slices.Clone(includedTables),
 		"excluded_tables":        []string{"public.audit_raw_content"},
 		"encryption_key_version": "backup-key-v1",
 		"byte_size":              4096,

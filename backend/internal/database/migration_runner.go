@@ -63,6 +63,20 @@ var (
 		"public.usage_records",
 		"public.security_events",
 		"public.operational_state",
+	}
+	investigationRecoveryTables = []string{
+		"public.identities",
+		"public.teams",
+		"public.memberships",
+		"public.service_accounts",
+		"public.sessions",
+		"public.one_time_codes",
+		"public.api_keys",
+		"public.model_allowlist",
+		"public.audit_records",
+		"public.usage_records",
+		"public.security_events",
+		"public.operational_state",
 		"public.investigation_cases",
 		"public.investigation_case_audits",
 		"public.investigation_access_grants",
@@ -203,8 +217,10 @@ func recoveryTablesForVersion(version uint) []string {
 		return nil
 	case version == 2:
 		return workforceRecoveryTables
-	default:
+	case version <= 7:
 		return metadataRecoveryTables
+	default:
+		return investigationRecoveryTables
 	}
 }
 
@@ -460,8 +476,10 @@ func validateProductionSchemaInventory(version uint, tables []string) error {
 		want = []string{"schema_migrations"}
 	case version == 2:
 		want = append([]string{"schema_migrations"}, unqualifiedTableNames(workforceRecoveryTables)...)
-	default:
+	case version <= 7:
 		want = append([]string{"schema_migrations", "audit_raw_content"}, unqualifiedTableNames(metadataRecoveryTables)...)
+	default:
+		want = append([]string{"schema_migrations", "audit_raw_content"}, unqualifiedTableNames(investigationRecoveryTables)...)
 	}
 	if !equalStringSet(tables, want) {
 		return migrationFailure{code: migrationCodeVerificationFailed}

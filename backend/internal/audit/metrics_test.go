@@ -41,7 +41,14 @@ func TestAuditAndLifecycleMetricsExposeOutcomesWithoutIdentifiers(t *testing.T) 
 	}
 
 	oldest := now.Add(-2 * time.Hour)
-	job, err := NewLifecycleJob(&lifecycleRepositoryFake{lag: DeletionLagState{Critical: true, OldestExpiredAt: &oldest}, deletedRawRows: 1, purgedHashes: 1})
+	job, err := NewLifecycleJob(&lifecycleRepositoryFake{
+		observeLags: []DeletionLagState{
+			{Critical: true, OldestExpiredAt: &oldest},
+			{Critical: false},
+		},
+		deletedRawRows: 1,
+		purgedHashes:   1,
+	})
 	if err != nil {
 		t.Fatalf("NewLifecycleJob() error = %v", err)
 	}
@@ -56,7 +63,8 @@ func TestAuditAndLifecycleMetricsExposeOutcomesWithoutIdentifiers(t *testing.T) 
 	for _, expected := range []string{
 		`operation="initial_capture"`,
 		`operation="finalization"`,
-		`n_api_p_raw_deletion_lag_seconds 7200`,
+		`n_api_p_raw_deletion_lag_seconds 0`,
+		`n_api_p_raw_deletion_lag_critical 0`,
 		`job="raw_cleanup",state="succeeded"`,
 		`job="verification_hash_purge",state="succeeded"`,
 	} {

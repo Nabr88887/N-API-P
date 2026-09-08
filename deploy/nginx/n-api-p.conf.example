@@ -1,4 +1,8 @@
 # Replace every N_API_P_* placeholder before including this configuration.
+# N_API_P_OPERATOR_CIDR restricts the original operator client at TLS ingress.
+# Separately set the application N_API_P_OPERATOR_PROXY_CIDRS value to this
+# Nginx peer's exact address or smallest dedicated subnet. The application
+# authorizes only its TCP immediate peer and never trusts X-Forwarded-For.
 
 upstream n_api_p_application {
     server N_API_P_APPLICATION_UPSTREAM;

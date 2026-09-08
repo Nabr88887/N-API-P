@@ -195,8 +195,9 @@ func New(cfg config.Config, secrets *config.Secrets) (*Application, error) {
 	if err != nil {
 		return closeOnError(err)
 	}
+	authorizeOperator := trustedOperatorRequest(cfg.OperatorProxyCIDRs)
 	operatorHealth, err := httpapi.NewOperatorHealthRouter(httpapi.OperatorHealthDependencies{
-		Authorize: trustedOperatorRequest, Configuration: func(context.Context) error {
+		Authorize: authorizeOperator, Configuration: func(context.Context) error {
 			if strings.TrimSpace(cfg.DatabaseURL) == "" || strings.TrimSpace(cfg.PortalOrigin) == "" || cfg.NewAPIBaseURL == nil || len(secrets.NewAPIToken()) == 0 {
 				return ErrInvalidApplication
 			}
@@ -216,7 +217,7 @@ func New(cfg config.Config, secrets *config.Secrets) (*Application, error) {
 	if err != nil {
 		return closeOnError(err)
 	}
-	operatorMetrics, err := httpapi.NewOperatorMetricsRouter(httpapi.OperatorMetricsDependencies{Authorize: trustedOperatorRequest, Metrics: metrics})
+	operatorMetrics, err := httpapi.NewOperatorMetricsRouter(httpapi.OperatorMetricsDependencies{Authorize: authorizeOperator, Metrics: metrics})
 	if err != nil {
 		return closeOnError(err)
 	}
@@ -245,16 +246,29 @@ func (application *Application) Close() error {
 	return application.DB.Close()
 }
 
-func trustedOperatorRequest(request *http.Request) bool {
-	if request == nil {
+func trustedOperatorRequest(trustedProxyCIDRs []*net.IPNet) func(*http.Request) bool {
+	return func(request *http.Request) bool {
+		if request == nil {
+			return false
+		}
+		host, _, err := net.SplitHostPort(strings.TrimSpace(request.RemoteAddr))
+		if err != nil {
+			host = strings.TrimSpace(request.RemoteAddr)
+		}
+		ip := net.ParseIP(host)
+		if ip == nil {
+			return false
+		}
+		if ip.IsLoopback() {
+			return true
+		}
+		for _, network := range trustedProxyCIDRs {
+			if network != nil && network.Contains(ip) {
+				return true
+			}
+		}
 		return false
 	}
-	host, _, err := net.SplitHostPort(strings.TrimSpace(request.RemoteAddr))
-	if err != nil {
-		host = strings.TrimSpace(request.RemoteAddr)
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast())
 }
 
 func embeddedAssets(files fs.FS) http.Handler {

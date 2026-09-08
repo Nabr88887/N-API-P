@@ -17,6 +17,7 @@ const (
 	defaultRawRetentionDays    = 7
 	defaultRawRetentionMaxDays = 30
 	hardRawRetentionMaxDays    = 30
+	maximumOperatorProxyCIDRs  = 16
 
 	defaultNewAPIConnectTimeout        = 5 * time.Second
 	defaultNewAPITLSHandshakeTimeout   = 5 * time.Second
@@ -49,6 +50,7 @@ type Config struct {
 	NewAPIIdleConnTimeout       time.Duration
 	NewAPITotalTimeout          time.Duration
 	AuditKeyFile                string
+	OperatorProxyCIDRs          []*net.IPNet
 	RawRetentionDefaultDays     int
 	RawRetentionMaxDays         int
 }
@@ -154,6 +156,10 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 	if err != nil || parsedOrigin.Scheme != "https" || parsedOrigin.Host == "" || parsedOrigin.User != nil || parsedOrigin.Path != "" || parsedOrigin.RawQuery != "" || parsedOrigin.Fragment != "" {
 		return Config{}, errors.New("N_API_P_PORTAL_ORIGIN must be an HTTPS origin")
 	}
+	operatorProxyCIDRs, err := optionalCIDRs(lookup, "N_API_P_OPERATOR_PROXY_CIDRS", maximumOperatorProxyCIDRs)
+	if err != nil {
+		return Config{}, err
+	}
 
 	retentionMaxDays, err := optionalInt(
 		lookup,
@@ -188,9 +194,34 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 		NewAPIIdleConnTimeout:       newAPIIdleConnTimeout,
 		NewAPITotalTimeout:          newAPITotalTimeout,
 		AuditKeyFile:                auditKeyFile,
+		OperatorProxyCIDRs:          operatorProxyCIDRs,
 		RawRetentionDefaultDays:     retentionDefaultDays,
 		RawRetentionMaxDays:         retentionMaxDays,
 	}, nil
+}
+
+func optionalCIDRs(lookup func(string) (string, bool), key string, maximum int) ([]*net.IPNet, error) {
+	value, ok := lookup(key)
+	if !ok || strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	parts := strings.Split(value, ",")
+	if len(parts) > maximum {
+		return nil, fmt.Errorf("%s must contain at most %d CIDRs", key, maximum)
+	}
+	networks := make([]*net.IPNet, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			return nil, fmt.Errorf("%s must contain only valid CIDRs", key)
+		}
+		_, network, err := net.ParseCIDR(trimmed)
+		if err != nil {
+			return nil, fmt.Errorf("%s must contain only valid CIDRs", key)
+		}
+		networks = append(networks, network)
+	}
+	return networks, nil
 }
 
 func required(lookup func(string) (string, bool), key string) (string, error) {

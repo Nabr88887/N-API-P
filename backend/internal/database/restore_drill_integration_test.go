@@ -42,6 +42,8 @@ const (
 	task105RequestID     = "95000000-0000-0000-0000-000000000010"
 	task105UsageID       = "95000000-0000-0000-0000-000000000011"
 	task105EventID       = "95000000-0000-0000-0000-000000000012"
+	task105CaseID        = "95000000-0000-0000-0000-000000000013"
+	task105GrantID       = "95000000-0000-0000-0000-000000000014"
 	task105RawMarker     = "synthetic-raw-content-must-not-restore"
 	task105SessionToken  = "synthetic-task105-session-token"
 	task105CSRFToken     = "synthetic-task105-csrf-token"
@@ -67,6 +69,9 @@ func TestTask105PrepareSource(t *testing.T) {
 	task105Exec(t, db, `INSERT INTO model_allowlist (model_id, status, updated_by_identity_id, created_at, updated_at) VALUES ('task105-model', 'allowed', $1, $2, $2)`, task105AdminID, now)
 	task105Exec(t, db, `UPDATE operational_state SET audit_gate_state = 'open', audit_gate_reason_code = NULL, gate_changed_at = $1, last_persistence_probe_at = $1, updated_at = $1 WHERE id = 1`, now)
 	task105Exec(t, db, `INSERT INTO audit_records (id, request_id, key_id, owner_kind, identity_id, team_id, model_id, capture_status, outcome, upstream_request_id, upstream_http_status, finish_reason, observed_request_bytes, observed_response_bytes, created_at, updated_at, completed_at) VALUES ($1, $2, $3, 'personal', $4, $5, 'task105-model', 'complete', 'success', 'task105-upstream', 200, 'stop', 64, 96, $6::timestamptz, $6::timestamptz, $6::timestamptz)`, task105AuditID, task105RequestID, task105PersonalKeyID, task105EmployeeID, task105TeamID, now)
+	task105Exec(t, db, `INSERT INTO investigation_cases (id, subject_identity_id, policy_concern, reason, start_at, end_at, status, created_by_identity_id, created_at) VALUES ($1, $2, 'task105-policy-concern', 'task105-investigation-reason', $3, $4, 'open', $5, $6)`, task105CaseID, task105EmployeeID, now.Add(-2*time.Hour), now.Add(-time.Hour), task105AdminID, now)
+	task105Exec(t, db, `INSERT INTO investigation_case_audits (case_id, audit_id, ordinal, capture_status, audit_created_at, raw_expires_at, created_at) VALUES ($1, $2, 1, 'complete', $3, $3::timestamptz + interval '7 days', $3)`, task105CaseID, task105AuditID, now)
+	task105Exec(t, db, `INSERT INTO investigation_access_grants (id, case_id, actor_identity_id, session_id, issued_at, expires_at) VALUES ($1, $2, $3, $4, $5, $5::timestamptz + interval '15 minutes')`, task105GrantID, task105CaseID, task105EmployeeID, task105SessionID, now)
 	task105Exec(t, db, `INSERT INTO audit_raw_content (audit_id, content_kind, compression, ciphertext, cipher_nonce, wrapped_data_key, wrap_nonce, key_version, created_at, expires_at) VALUES ($1, 'request', 'gzip', $2, decode(repeat('61', 12), 'hex'), decode(repeat('62', 32), 'hex'), decode(repeat('63', 12), 'hex'), 1, $3::timestamptz, $3::timestamptz + interval '7 days')`, task105AuditID, []byte(task105RawMarker+"-ciphertext"), now)
 	task105Exec(t, db, `INSERT INTO usage_records (id, audit_id, request_id, key_id, owner_kind, identity_id, team_id, model_id, upstream_request_id, outcome, usage_reported, input_tokens, output_tokens, total_tokens, created_at) VALUES ($1, $2, $3, $4, 'personal', $5, $6, 'task105-model', 'task105-upstream', 'success', true, 3, 4, 7, $7)`, task105UsageID, task105AuditID, task105RequestID, task105PersonalKeyID, task105EmployeeID, task105TeamID, now)
 	task105Exec(t, db, `INSERT INTO security_events (id, event_type, request_id, outcome, reason, detail_code, occurred_at, retain_until) VALUES ($1, 'operational_fault', $2, 'failure', $3, 'task105_recovery_point', $4::timestamptz, $4::timestamptz + interval '30 days')`, task105EventID, task105RequestID, now.Format(time.RFC3339), now)
@@ -83,10 +88,12 @@ func TestTask105VerifyRestoredBeforeInvalidation(t *testing.T) {
 		"identities": 2, "teams": 1, "memberships": 2, "service_accounts": 1,
 		"sessions": 1, "one_time_codes": 1, "api_keys": 2, "model_allowlist": 1,
 		"audit_records": 1, "usage_records": 1, "security_events": 1,
+		"investigation_cases": 1, "investigation_case_audits": 1, "investigation_access_grants": 1,
 		"operational_state": 1, "audit_raw_content": 0,
 	} {
 		task105AssertCount(t, db, table, want)
 	}
+	task105AssertInvestigationMetadata(t, db)
 
 	repository := database.NewRepository(db)
 	session, err := access.NewSessionService(repository).Authenticate(context.Background(), task105SessionToken, task105CSRFToken, true)
@@ -145,6 +152,7 @@ func TestTask105InvalidateRestoredCredentials(t *testing.T) {
 		`UPDATE sessions SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP), reauthenticated_until = NULL`,
 		`UPDATE one_time_codes SET used_at = COALESCE(used_at, CURRENT_TIMESTAMP), revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP) WHERE used_at IS NULL AND revoked_at IS NULL`,
 		`UPDATE api_keys SET status = 'revoked', revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP), verification_hash = NULL`,
+		`UPDATE investigation_access_grants SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP) WHERE revoked_at IS NULL`,
 		`UPDATE operational_state SET audit_gate_state = 'blocked', audit_gate_reason_code = 'restore_requires_probe', gate_changed_at = CURRENT_TIMESTAMP, last_persistence_probe_at = NULL, last_cleanup_at = NULL, deletion_overdue_since = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = 1`,
 	} {
 		if _, err := tx.Exec(statement); err != nil {
@@ -180,6 +188,14 @@ func TestTask105VerifyRestored(t *testing.T) {
 	}
 	if rawRows != 0 || activeSessions != 0 || activeKeys != 0 || usableCodes != 0 {
 		t.Fatalf("restore safety counts raw=%d sessions=%d keys=%d codes=%d", rawRows, activeSessions, activeKeys, usableCodes)
+	}
+	task105AssertInvestigationMetadata(t, db)
+	var activeInvestigationGrants int
+	if err := db.QueryRow(`SELECT count(*) FROM investigation_access_grants WHERE revoked_at IS NULL`).Scan(&activeInvestigationGrants); err != nil {
+		t.Fatal(err)
+	}
+	if activeInvestigationGrants != 0 {
+		t.Fatalf("active restored investigation grants = %d, want 0", activeInvestigationGrants)
 	}
 	var state, reason string
 	if err := db.QueryRow(`SELECT audit_gate_state, audit_gate_reason_code FROM operational_state WHERE id = 1`).Scan(&state, &reason); err != nil {
@@ -459,6 +475,30 @@ func task105AssertCount(t *testing.T, db *sql.DB, table string, want int) {
 	}
 	if got != want {
 		t.Fatalf("%s rows = %d, want %d", table, got, want)
+	}
+}
+
+func task105AssertInvestigationMetadata(t *testing.T, db *sql.DB) {
+	t.Helper()
+	var subjectID, creatorID, auditID, captureStatus, actorID, sessionID string
+	var ordinal int
+	if err := db.QueryRow(`
+		SELECT cases.subject_identity_id, cases.created_by_identity_id,
+		       case_audits.audit_id, case_audits.ordinal, case_audits.capture_status,
+		       grants.actor_identity_id, grants.session_id
+		FROM investigation_cases AS cases
+		JOIN investigation_case_audits AS case_audits ON case_audits.case_id = cases.id
+		JOIN investigation_access_grants AS grants ON grants.case_id = cases.id
+		WHERE cases.id = $1 AND grants.id = $2`, task105CaseID, task105GrantID).Scan(
+		&subjectID, &creatorID, &auditID, &ordinal, &captureStatus, &actorID, &sessionID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if subjectID != task105EmployeeID || creatorID != task105AdminID ||
+		auditID != task105AuditID || ordinal != 1 || captureStatus != "complete" ||
+		actorID != task105EmployeeID || sessionID != task105SessionID {
+		t.Fatalf("restored investigation metadata = (%s, %s, %s, %d, %s, %s, %s), want seeded v8 metadata",
+			subjectID, creatorID, auditID, ordinal, captureStatus, actorID, sessionID)
 	}
 }
 

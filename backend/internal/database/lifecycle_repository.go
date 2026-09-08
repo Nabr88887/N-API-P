@@ -60,15 +60,39 @@ WHERE id = 1
 FOR UPDATE`
 
 const deleteExpiredRawContentSQL = `
-DELETE FROM audit_raw_content
-WHERE expires_at <= $1`
+WITH candidates AS (
+    SELECT audit_id, content_kind
+    FROM audit_raw_content
+    WHERE expires_at <= $1
+    ORDER BY expires_at, audit_id, content_kind
+    FOR UPDATE SKIP LOCKED
+    LIMIT $2
+)
+DELETE FROM audit_raw_content AS raw
+USING candidates
+WHERE raw.audit_id = candidates.audit_id
+  AND raw.content_kind = candidates.content_kind`
 
 const markLifecycleCleanupSQL = `
-UPDATE operational_state
-SET last_cleanup_at = $1,
-    deletion_overdue_since = NULL,
-    updated_at = $1
-WHERE id = 1`
+WITH lag AS (
+    SELECT min(expires_at) AS oldest_expired_at
+    FROM audit_raw_content
+    WHERE expires_at <= $1
+), updated AS (
+    UPDATE operational_state
+    SET last_cleanup_at = $1,
+        deletion_overdue_since = CASE
+            WHEN lag.oldest_expired_at < $1 - INTERVAL '1 hour'
+                THEN lag.oldest_expired_at + INTERVAL '1 hour'
+            ELSE NULL
+        END,
+        updated_at = $1
+    FROM lag
+    WHERE operational_state.id = 1
+    RETURNING operational_state.deletion_overdue_since
+)
+SELECT deletion_overdue_since
+FROM updated`
 
 const purgeRevokedVerificationHashesSQL = `
 UPDATE api_keys
@@ -363,7 +387,7 @@ func (r *Repository) DeleteExpiredRawContent(ctx context.Context, expiredAt time
 		return 0, err
 	}
 
-	result, err := tx.ExecContext(ctx, deleteExpiredRawContentSQL, expiredAt.UTC())
+	result, err := tx.ExecContext(ctx, deleteExpiredRawContentSQL, expiredAt.UTC(), audit.RawContentCleanupBatchSize)
 	if err != nil {
 		return 0, fmt.Errorf("delete expired raw content: %w", err)
 	}
@@ -371,16 +395,11 @@ func (r *Repository) DeleteExpiredRawContent(ctx context.Context, expiredAt time
 	if err != nil {
 		return 0, fmt.Errorf("count deleted raw content: %w", err)
 	}
-	result, err = tx.ExecContext(ctx, markLifecycleCleanupSQL, expiredAt.UTC())
-	if err != nil {
+	var remainingOverdue sql.NullTime
+	if err := tx.QueryRowContext(ctx, markLifecycleCleanupSQL, expiredAt.UTC()).Scan(&remainingOverdue); err != nil {
 		return 0, fmt.Errorf("record raw cleanup completion: %w", err)
 	}
-	if affected, err := result.RowsAffected(); err != nil {
-		return 0, fmt.Errorf("count cleanup state updates: %w", err)
-	} else if affected != 1 {
-		return 0, fmt.Errorf("record raw cleanup completion: %w", sql.ErrNoRows)
-	}
-	if previousOverdue.Valid {
+	if previousOverdue.Valid && !remainingOverdue.Valid {
 		if err := appendOperationalEventTx(ctx, tx, operations.FaultTransition{
 			Fault: operations.FaultRawDeletionOverdue, Active: false, OccurredAt: expiredAt.UTC(),
 		}); err != nil {

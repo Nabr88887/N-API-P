@@ -10,8 +10,10 @@ import (
 )
 
 const (
-	CleanupInterval = 15 * time.Minute
-	DeletionTarget  = time.Hour
+	CleanupInterval            = 15 * time.Minute
+	DeletionTarget             = time.Hour
+	RawContentCleanupBatchSize = 1000
+	rawContentCleanupMaxBatches = 64
 )
 
 var (
@@ -112,17 +114,29 @@ func (job *LifecycleJob) RunOnce(ctx context.Context, completedAt time.Time) (Li
 		job.observeJob("raw_cleanup", "failed")
 		return LifecycleCleanupResult{}, fmt.Errorf("%w: observe deletion lag: %w", ErrLifecycleUnavailable, err)
 	}
+	var deleted int64
+	for batch := 0; batch < rawContentCleanupMaxBatches; batch++ {
+		batchDeleted, err := job.repository.DeleteExpiredRawContent(ctx, completedAt)
+		if err != nil {
+			job.observeJob("raw_cleanup", "failed")
+			return LifecycleCleanupResult{}, fmt.Errorf("%w: delete expired raw content: %w", ErrLifecycleUnavailable, err)
+		}
+		deleted += batchDeleted
+		if batchDeleted < RawContentCleanupBatchSize {
+			break
+		}
+	}
+	lag, err = job.repository.ObserveDeletionLag(ctx, completedAt)
+	if err != nil {
+		job.observeJob("raw_cleanup", "failed")
+		return LifecycleCleanupResult{}, fmt.Errorf("%w: refresh deletion lag after cleanup: %w", ErrLifecycleUnavailable, err)
+	}
 	if job.metrics != nil {
 		observedAt := lag.ObservedAt
 		if observedAt.IsZero() {
 			observedAt = completedAt
 		}
 		job.metrics.SetDeletionLag(lag.Critical, lag.OldestExpiredAt, lag.OverdueSince, observedAt)
-	}
-	deleted, err := job.repository.DeleteExpiredRawContent(ctx, completedAt)
-	if err != nil {
-		job.observeJob("raw_cleanup", "failed")
-		return LifecycleCleanupResult{}, fmt.Errorf("%w: delete expired raw content: %w", ErrLifecycleUnavailable, err)
 	}
 	job.observeJob("raw_cleanup", "succeeded")
 	job.observeJob("verification_hash_purge", "running")
