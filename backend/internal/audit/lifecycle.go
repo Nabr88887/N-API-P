@@ -10,9 +10,9 @@ import (
 )
 
 const (
-	CleanupInterval            = 15 * time.Minute
-	DeletionTarget             = time.Hour
-	RawContentCleanupBatchSize = 1000
+	CleanupInterval             = 15 * time.Minute
+	DeletionTarget              = time.Hour
+	RawContentCleanupBatchSize  = 1000
 	rawContentCleanupMaxBatches = 64
 )
 
@@ -114,6 +114,7 @@ func (job *LifecycleJob) RunOnce(ctx context.Context, completedAt time.Time) (Li
 		job.observeJob("raw_cleanup", "failed")
 		return LifecycleCleanupResult{}, fmt.Errorf("%w: observe deletion lag: %w", ErrLifecycleUnavailable, err)
 	}
+	job.setDeletionLagMetric(lag, completedAt)
 	var deleted int64
 	for batch := 0; batch < rawContentCleanupMaxBatches; batch++ {
 		batchDeleted, err := job.repository.DeleteExpiredRawContent(ctx, completedAt)
@@ -131,13 +132,7 @@ func (job *LifecycleJob) RunOnce(ctx context.Context, completedAt time.Time) (Li
 		job.observeJob("raw_cleanup", "failed")
 		return LifecycleCleanupResult{}, fmt.Errorf("%w: refresh deletion lag after cleanup: %w", ErrLifecycleUnavailable, err)
 	}
-	if job.metrics != nil {
-		observedAt := lag.ObservedAt
-		if observedAt.IsZero() {
-			observedAt = completedAt
-		}
-		job.metrics.SetDeletionLag(lag.Critical, lag.OldestExpiredAt, lag.OverdueSince, observedAt)
-	}
+	job.setDeletionLagMetric(lag, completedAt)
 	job.observeJob("raw_cleanup", "succeeded")
 	job.observeJob("verification_hash_purge", "running")
 	purged, err := job.repository.PurgeRevokedVerificationHashes(ctx, completedAt)
@@ -199,6 +194,17 @@ func (job *LifecycleJob) observeJob(name, state string) {
 	if job != nil && job.metrics != nil {
 		job.metrics.ObserveBackgroundJob(name, state)
 	}
+}
+
+func (job *LifecycleJob) setDeletionLagMetric(lag DeletionLagState, fallbackObservedAt time.Time) {
+	if job == nil || job.metrics == nil {
+		return
+	}
+	observedAt := lag.ObservedAt
+	if observedAt.IsZero() {
+		observedAt = fallbackObservedAt
+	}
+	job.metrics.SetDeletionLag(lag.Critical, lag.OldestExpiredAt, lag.OverdueSince, observedAt)
 }
 
 type realLifecycleTicker struct {

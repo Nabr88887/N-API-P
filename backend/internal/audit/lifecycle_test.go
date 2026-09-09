@@ -235,15 +235,15 @@ type lifecycleRepositoryFake struct {
 	observeLags       []DeletionLagState
 	deletedRawRows    int64
 	deletedRawBatches []int64
-	purgedHashes   int64
-	purgedMetadata MetadataPurgeResult
-	observeErr     error
-	observeErrors  []error
-	observeCalls   int
-	deleteErr      error
-	purgeErr       error
-	calls          []string
-	observed       chan time.Time
+	purgedHashes      int64
+	purgedMetadata    MetadataPurgeResult
+	observeErr        error
+	observeErrors     []error
+	observeCalls      int
+	deleteErr         error
+	purgeErr          error
+	calls             []string
+	observed          chan time.Time
 }
 
 func (repository *lifecycleRepositoryFake) ReadRawContent(context.Context, RawContentLookup) (RawContentRecord, error) {

@@ -64,7 +64,7 @@ func TestAuditAndLifecycleMetricsExposeOutcomesWithoutIdentifiers(t *testing.T) 
 		`operation="initial_capture"`,
 		`operation="finalization"`,
 		`n_api_p_raw_deletion_lag_seconds 0`,
-		`n_api_p_raw_deletion_lag_critical 0`,
+		`n_api_p_raw_deletion_overdue 0`,
 		`job="raw_cleanup",state="succeeded"`,
 		`job="verification_hash_purge",state="succeeded"`,
 	} {
