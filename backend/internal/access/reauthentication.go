@@ -193,6 +193,8 @@ type SecurityEvent struct {
 	TargetKeyID            string
 	TargetAuditID          string
 	InvestigationCaseID    string
+	SessionID              string
+	GrantID                string
 	RequestID              string
 	Outcome                SecurityEventOutcome
 	Reason                 string
