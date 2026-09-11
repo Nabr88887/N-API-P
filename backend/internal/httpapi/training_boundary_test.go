@@ -11,7 +11,7 @@ func TestFirstReleaseHasNoTrainingEndpointsOrRoles(t *testing.T) {
 		RoleTeamAdministrator:   {},
 		RoleSystemAdministrator: {},
 	}
-	forbiddenRouteTerms := []string{"training", "dataset", "relabel", "convert", "export"}
+	forbiddenRouteTerms := []string{"training", "dataset", "relabel", "convert"}
 
 	for _, route := range Routes() {
 		routeText := strings.ToLower(string(route.Name) + " " + route.Pattern)

@@ -92,10 +92,15 @@ func (r *Repository) ChangeRetentionPolicy(ctx context.Context, change access.Re
 }
 
 func appendSecurityEventTx(ctx context.Context, tx *sql.Tx, event access.SecurityEvent) error {
+	metadata, err := securityEventQueryMetadata(event)
+	if err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, insertSecurityEventSQL,
 		event.ID, event.EventType, event.ActorIdentityID, event.TargetIdentityID,
 		event.TargetServiceAccountID, event.TargetKeyID, event.TargetAuditID, event.InvestigationCaseID,
-		event.RequestID, event.Outcome, event.Reason, event.DetailCode, event.OccurredAt,
+		event.SessionID, event.GrantID, event.RequestID, event.Outcome, event.Reason, event.DetailCode, event.OccurredAt,
+		metadata, event.ResultCount,
 	); err != nil {
 		return fmt.Errorf("append security event in transaction: %w", err)
 	}

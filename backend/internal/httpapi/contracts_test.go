@@ -53,6 +53,11 @@ func TestErrorDefinitionsExposeOnlyApprovedSafeSemantics(t *testing.T) {
 		{CodeUpstreamTimeout, 504, TypeUpstream, "Upstream request timed out."},
 		{CodeInvestigationScopeTooBroad, 409, TypeInvalidRequest, "More than 100 retained audit records matched this scope; narrow the time range."},
 		{CodeInvestigationNoCandidates, 400, TypeInvalidRequest, "No retained audit records matched this employee and time range."},
+		{CodeGrantExpired, 403, TypePermission, "Elevated audit grant expired."},
+		{CodeGrantRevoked, 403, TypePermission, "Elevated audit grant revoked."},
+		{CodeInvalidQuery, 400, TypeInvalidRequest, "Invalid audit query."},
+		{CodeInvalidCursor, 400, TypeInvalidRequest, "Invalid audit cursor."},
+		{CodeExportIncomplete, 503, TypeServiceUnavailable, "Audit export did not complete."},
 	}
 
 	for _, tt := range tests {
@@ -213,6 +218,11 @@ func expectedRoutes() map[string]Route {
 		approvedRoute("admin.audits.list", MethodGet, "/api/v1/audits", SurfacePortal, AuthPortalSession, systemRole),
 		approvedRoute("admin.audits.get", MethodGet, "/api/v1/audits/{auditID}", SurfacePortal, AuthPortalSession, systemRole),
 		approvedRoute("admin.audits.view_raw", MethodPost, "/api/v1/audits/{auditID}/raw-views", SurfacePortal, AuthPortalSession, systemRole),
+		approvedRoute("admin.elevated_audit.grant", MethodPost, "/api/v1/admin/audit-access/grants", SurfacePortal, AuthPortalSession, systemRole),
+		approvedRoute("admin.elevated_audit.revoke", MethodDelete, "/api/v1/admin/audit-access/grants/current", SurfacePortal, AuthPortalSession, systemRole),
+		approvedRoute("admin.elevated_audit.query", MethodPost, "/api/v1/audits/query", SurfacePortal, AuthPortalSession, systemRole),
+		approvedRoute("admin.elevated_audit.batch", MethodPost, "/api/v1/audits/batch", SurfacePortal, AuthPortalSession, systemRole),
+		approvedRoute("admin.elevated_audit.export", MethodPost, "/api/v1/audits/exports", SurfacePortal, AuthPortalSession, systemRole),
 		approvedRoute("admin.investigations.create", MethodPost, "/api/v1/investigation-cases", SurfacePortal, AuthPortalSession, systemRole),
 		approvedRoute("admin.investigations.list", MethodGet, "/api/v1/investigation-cases", SurfacePortal, AuthPortalSession, systemRole),
 		approvedRoute("admin.investigations.candidates", MethodGet, "/api/v1/investigation-cases/{caseID}/audits", SurfacePortal, AuthPortalSession, systemRole),

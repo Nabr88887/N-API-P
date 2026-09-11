@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -168,10 +169,10 @@ INSERT INTO sessions (
 const insertSecurityEventSQL = `
 INSERT INTO security_events (
     id, event_type, actor_identity_id, target_identity_id, target_service_account_id, target_key_id, target_audit_id,
-    investigation_case_id, request_id, outcome, reason, detail_code, occurred_at
+    investigation_case_id, session_id, grant_id, request_id, outcome, reason, detail_code, occurred_at, query_metadata, result_count
 ) VALUES (
     $1, $2, NULLIF($3, '')::uuid, NULLIF($4, '')::uuid, NULLIF($5, '')::uuid, NULLIF($6, '')::uuid, NULLIF($7, '')::uuid,
-    NULLIF($8, '')::uuid, $9, $10, NULLIF($11, ''), NULLIF($12, ''), $13
+    NULLIF($8, '')::uuid, NULLIF($9, '')::uuid, NULLIF($10, '')::uuid, $11, $12, NULLIF($13, ''), NULLIF($14, ''), $15, $16::jsonb, $17
 )`
 
 // Lifecycle events use detail_code for the bounded non-secret key prefix.
@@ -506,15 +507,31 @@ func (r *Repository) RotatePortalSession(ctx context.Context, rotation access.Po
 }
 
 func (r *Repository) AppendSecurityEvent(ctx context.Context, event access.SecurityEvent) error {
-	_, err := r.db.ExecContext(ctx, insertSecurityEventSQL,
+	metadata, err := securityEventQueryMetadata(event)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.ExecContext(ctx, insertSecurityEventSQL,
 		event.ID, event.EventType, event.ActorIdentityID, event.TargetIdentityID,
 		event.TargetServiceAccountID, event.TargetKeyID, event.TargetAuditID, event.InvestigationCaseID,
-		event.RequestID, event.Outcome, event.Reason, event.DetailCode, event.OccurredAt,
+		event.SessionID, event.GrantID, event.RequestID, event.Outcome, event.Reason, event.DetailCode, event.OccurredAt,
+		metadata, event.ResultCount,
 	)
 	if err != nil {
 		return fmt.Errorf("append security event: %w", err)
 	}
 	return nil
+}
+
+func securityEventQueryMetadata(event access.SecurityEvent) (any, error) {
+	if event.QueryMetadata == nil {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(event.QueryMetadata)
+	if err != nil {
+		return nil, fmt.Errorf("encode audit query metadata: %w", err)
+	}
+	return string(encoded), nil
 }
 
 func appendCredentialLifecycleEvent(ctx context.Context, tx *sql.Tx, event access.CredentialLifecycleEvent) error {

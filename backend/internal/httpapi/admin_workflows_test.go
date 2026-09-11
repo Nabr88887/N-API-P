@@ -76,6 +76,7 @@ func TestAdminPortalRouterRegistersDeclaredAdministrationResourceRoutes(t *testi
 		Models: &fakeAdminModelPolicyService{}, Retention: &fakeAdminRetentionPolicyService{}, Administration: administration,
 		Audits: audits, RawView: &fakeRawViewService{view: audit.RawView{AuditID: rawViewHTTPAuditID, RequestJSON: json.RawMessage(`{}`), ResponseJSON: json.RawMessage(`{}`)}},
 		Operations: &fakeOperationsService{}, Offboarding: offboarding, ServiceAccount: serviceAccounts, Identity: &adminIdentityServiceFake{}, SecurityEvents: administration,
+		ElevatedAccess: &fakeElevatedAuditAccessService{}, ElevatedQuery: &fakeElevatedAuditQueryService{}, ElevatedExport: &fakeElevatedAuditExportService{},
 	})
 	if err != nil {
 		t.Fatalf("NewAdminPortalRouter() error = %v", err)

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -139,6 +140,19 @@ type AdminInvestigationService interface {
 	Close(context.Context, audit.InvestigationCaseClosure) error
 }
 
+type AdminElevatedAuditAccessService interface {
+	Issue(context.Context, audit.IssueElevatedAuditGrantInput) (audit.ElevatedAuditGrant, error)
+	Revoke(context.Context, audit.RevokeElevatedAuditGrantInput) error
+}
+
+type AdminElevatedAuditQueryService interface {
+	Query(context.Context, audit.ElevatedAuditQueryInput) (audit.ElevatedAuditPage, error)
+}
+
+type AdminElevatedAuditExportService interface {
+	Export(context.Context, audit.ElevatedAuditExportInput, io.Writer) error
+}
+
 type AdminPortalDependencies struct {
 	Sessions         PortalSessionService
 	AllowedOrigin    string
@@ -157,6 +171,9 @@ type AdminPortalDependencies struct {
 	Identity         AdminIdentityService
 	SecurityEvents   AdminSecurityEventLister
 	Investigations   AdminInvestigationService
+	ElevatedAccess   AdminElevatedAuditAccessService
+	ElevatedQuery    AdminElevatedAuditQueryService
+	ElevatedExport   AdminElevatedAuditExportService
 }
 
 var ErrAdminPortalDependencies = errors.New("admin portal services are required")
@@ -832,7 +849,7 @@ func NewAdminRetentionPolicyGetHandler(service AdminRetentionPolicyReader) http.
 }
 
 func NewAdminPortalRouter(deps AdminPortalDependencies) (http.Handler, error) {
-	if deps.Sessions == nil || deps.Invitations == nil || deps.PasswordResets == nil || deps.ServiceKeys == nil || deps.ServiceKeyRevoke == nil || deps.Models == nil || deps.Retention == nil || deps.Administration == nil || deps.Audits == nil || deps.RawView == nil || deps.Operations == nil || deps.Offboarding == nil || deps.ServiceAccount == nil || deps.Identity == nil || deps.SecurityEvents == nil {
+	if deps.Sessions == nil || deps.Invitations == nil || deps.PasswordResets == nil || deps.ServiceKeys == nil || deps.ServiceKeyRevoke == nil || deps.Models == nil || deps.Retention == nil || deps.Administration == nil || deps.Audits == nil || deps.RawView == nil || deps.Operations == nil || deps.Offboarding == nil || deps.ServiceAccount == nil || deps.Identity == nil || deps.SecurityEvents == nil || deps.ElevatedAccess == nil || deps.ElevatedQuery == nil || deps.ElevatedExport == nil {
 		return nil, ErrAdminPortalDependencies
 	}
 	middleware, err := NewPortalSessionMiddleware(deps.Sessions, deps.AllowedOrigin)
@@ -934,6 +951,21 @@ func NewAdminPortalRouter(deps AdminPortalDependencies) (http.Handler, error) {
 		return nil, err
 	}
 	if err := registerAdminRoute("admin.audits.view_raw", http.MethodPost, "/api/v1/audits/{auditID}/raw-views", NewRawViewHandler(deps.RawView)); err != nil {
+		return nil, err
+	}
+	if err := registerAdminRoute("admin.elevated_audit.grant", http.MethodPost, "/api/v1/admin/audit-access/grants", NewElevatedAuditGrantHandler(deps.ElevatedAccess)); err != nil {
+		return nil, err
+	}
+	if err := registerAdminRoute("admin.elevated_audit.revoke", http.MethodDelete, "/api/v1/admin/audit-access/grants/current", NewElevatedAuditGrantRevokeHandler(deps.ElevatedAccess)); err != nil {
+		return nil, err
+	}
+	if err := registerAdminRoute("admin.elevated_audit.query", http.MethodPost, "/api/v1/audits/query", NewElevatedAuditQueryHandler(deps.ElevatedQuery, false)); err != nil {
+		return nil, err
+	}
+	if err := registerAdminRoute("admin.elevated_audit.batch", http.MethodPost, "/api/v1/audits/batch", NewElevatedAuditQueryHandler(deps.ElevatedQuery, true)); err != nil {
+		return nil, err
+	}
+	if err := registerAdminRoute("admin.elevated_audit.export", http.MethodPost, "/api/v1/audits/exports", NewElevatedAuditExportHandler(deps.ElevatedExport)); err != nil {
 		return nil, err
 	}
 	if deps.Investigations != nil {

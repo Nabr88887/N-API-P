@@ -40,6 +40,11 @@ const (
 	CodeUpstreamTimeout            ErrorCode = "UPSTREAM_TIMEOUT"
 	CodeInvestigationScopeTooBroad ErrorCode = "INVESTIGATION_SCOPE_TOO_BROAD"
 	CodeInvestigationNoCandidates  ErrorCode = "INVESTIGATION_NO_CANDIDATES"
+	CodeGrantExpired               ErrorCode = "GRANT_EXPIRED"
+	CodeGrantRevoked               ErrorCode = "GRANT_REVOKED"
+	CodeInvalidQuery               ErrorCode = "INVALID_QUERY"
+	CodeInvalidCursor              ErrorCode = "INVALID_CURSOR"
+	CodeExportIncomplete           ErrorCode = "EXPORT_INCOMPLETE"
 )
 
 type ErrorObject struct {
@@ -83,6 +88,11 @@ var errorDefinitions = map[ErrorCode]errorDefinition{
 	CodeUpstreamTimeout:            {http.StatusGatewayTimeout, TypeUpstream, "Upstream request timed out."},
 	CodeInvestigationScopeTooBroad: {http.StatusConflict, TypeInvalidRequest, "More than 100 retained audit records matched this scope; narrow the time range."},
 	CodeInvestigationNoCandidates:  {http.StatusBadRequest, TypeInvalidRequest, "No retained audit records matched this employee and time range."},
+	CodeGrantExpired:               {http.StatusForbidden, TypePermission, "Elevated audit grant expired."},
+	CodeGrantRevoked:               {http.StatusForbidden, TypePermission, "Elevated audit grant revoked."},
+	CodeInvalidQuery:               {http.StatusBadRequest, TypeInvalidRequest, "Invalid audit query."},
+	CodeInvalidCursor:              {http.StatusBadRequest, TypeInvalidRequest, "Invalid audit cursor."},
+	CodeExportIncomplete:           {http.StatusServiceUnavailable, TypeServiceUnavailable, "Audit export did not complete."},
 }
 
 func ErrorResponse(code ErrorCode, param *string) (int, ErrorEnvelope) {
@@ -234,6 +244,11 @@ func buildRouteInventory() []Route {
 		route("admin.audits.list", MethodGet, "/api/v1/audits", SurfacePortal, AuthPortalSession, systemRole),
 		route("admin.audits.get", MethodGet, "/api/v1/audits/{auditID}", SurfacePortal, AuthPortalSession, systemRole),
 		route("admin.audits.view_raw", MethodPost, "/api/v1/audits/{auditID}/raw-views", SurfacePortal, AuthPortalSession, systemRole),
+		route("admin.elevated_audit.grant", MethodPost, "/api/v1/admin/audit-access/grants", SurfacePortal, AuthPortalSession, systemRole),
+		route("admin.elevated_audit.revoke", MethodDelete, "/api/v1/admin/audit-access/grants/current", SurfacePortal, AuthPortalSession, systemRole),
+		route("admin.elevated_audit.query", MethodPost, "/api/v1/audits/query", SurfacePortal, AuthPortalSession, systemRole),
+		route("admin.elevated_audit.batch", MethodPost, "/api/v1/audits/batch", SurfacePortal, AuthPortalSession, systemRole),
+		route("admin.elevated_audit.export", MethodPost, "/api/v1/audits/exports", SurfacePortal, AuthPortalSession, systemRole),
 		route("admin.investigations.create", MethodPost, "/api/v1/investigation-cases", SurfacePortal, AuthPortalSession, systemRole),
 		route("admin.investigations.list", MethodGet, "/api/v1/investigation-cases", SurfacePortal, AuthPortalSession, systemRole),
 		route("admin.investigations.candidates", MethodGet, "/api/v1/investigation-cases/{caseID}/audits", SurfacePortal, AuthPortalSession, systemRole),

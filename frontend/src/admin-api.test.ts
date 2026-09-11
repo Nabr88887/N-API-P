@@ -115,4 +115,36 @@ describe('admin portal client', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/investigation-cases', expect.objectContaining({ method: 'POST', body: expect.not.stringContaining('grant-1') }))
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/v1/investigation-cases/case%2F1/audits/audit%2F1/raw-views', expect.objectContaining({ method: 'POST', body: '{}' }))
   })
+
+  it('manages elevated audit grants, broad queries, batch views, and cancellable exports', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 'grant-1', status: 'active', issued_at: '2026-09-11T09:00:00Z', expires_at: '2026-09-12T09:00:00Z' }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: [], pagination: { has_more: false } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: [], pagination: { has_more: false } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response('audit-jsonl\n', { status: 200, headers: { 'Content-Type': 'application/x-ndjson' } }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    const client = createAdminPortalClient()
+    const abortController = new AbortController()
+
+    await client.issueElevatedAuditGrant!('synthetic incident review')
+    await client.queryElevatedAudits!({ identity_id: 'employee-1', full_text: 'alpha', limit: 25 })
+    await client.batchViewElevatedAudits!(['audit-1', 'audit-2'])
+    await client.exportElevatedAudits!({ owner_kind: 'service', limit: 100 }, abortController.signal)
+    await client.revokeElevatedAuditGrant!()
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/admin/audit-access/grants', expect.objectContaining({ method: 'POST', body: JSON.stringify({ purpose: 'synthetic incident review' }) }))
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/v1/audits/query', expect.objectContaining({ method: 'POST', body: JSON.stringify({ identity_id: 'employee-1', full_text: 'alpha', limit: 25 }) }))
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/v1/audits/batch', expect.objectContaining({ method: 'POST', body: JSON.stringify({ audit_ids: ['audit-1', 'audit-2'], limit: 1000 }) }))
+    expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/v1/audits/exports', expect.objectContaining({ method: 'POST', body: JSON.stringify({ owner_kind: 'service', limit: 100 }) }))
+    expect(fetchMock.mock.calls[3][1]).toEqual(expect.objectContaining({ signal: abortController.signal }))
+    expect(fetchMock.mock.calls[3][1]).toEqual(expect.objectContaining({ cache: 'no-store' }))
+    expect(fetchMock).toHaveBeenNthCalledWith(5, '/api/v1/admin/audit-access/grants/current', expect.objectContaining({ method: 'DELETE' }))
+  })
+
+  it('reports a broken export response body as incomplete rather than returning a download', async () => {
+    const response = new Response('synthetic', { headers: { 'Content-Type': 'application/x-ndjson' } })
+    vi.spyOn(response, 'blob').mockRejectedValue(new TypeError('synthetic interrupted stream'))
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(response)
+    await expect(createAdminPortalClient().exportElevatedAudits!({ limit: 1 })).rejects.toMatchObject({ code: 'EXPORT_INCOMPLETE' })
+  })
 })

@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	productionMigrationTargetVersion uint = 8
+	productionMigrationTargetVersion uint = 9
 	maximumRecoveryManifestBytes          = 16 * 1024
 	maximumRecoveryPointAge               = 24 * time.Hour
 	migrationStatementTimeout             = 5 * time.Minute
@@ -81,6 +81,7 @@ var (
 		"public.investigation_case_audits",
 		"public.investigation_access_grants",
 	}
+	elevatedAuditRecoveryTables = append(append([]string{}, investigationRecoveryTables...), "public.elevated_audit_grants")
 )
 
 type MigrationRequest struct {
@@ -219,8 +220,10 @@ func recoveryTablesForVersion(version uint) []string {
 		return workforceRecoveryTables
 	case version <= 7:
 		return metadataRecoveryTables
-	default:
+	case version == 8:
 		return investigationRecoveryTables
+	default:
+		return elevatedAuditRecoveryTables
 	}
 }
 
@@ -478,8 +481,10 @@ func validateProductionSchemaInventory(version uint, tables []string) error {
 		want = append([]string{"schema_migrations"}, unqualifiedTableNames(workforceRecoveryTables)...)
 	case version <= 7:
 		want = append([]string{"schema_migrations", "audit_raw_content"}, unqualifiedTableNames(metadataRecoveryTables)...)
-	default:
+	case version == 8:
 		want = append([]string{"schema_migrations", "audit_raw_content"}, unqualifiedTableNames(investigationRecoveryTables)...)
+	default:
+		want = append([]string{"schema_migrations", "audit_raw_content"}, unqualifiedTableNames(elevatedAuditRecoveryTables)...)
 	}
 	if !equalStringSet(tables, want) {
 		return migrationFailure{code: migrationCodeVerificationFailed}

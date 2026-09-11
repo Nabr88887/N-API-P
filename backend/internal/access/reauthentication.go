@@ -200,6 +200,22 @@ type SecurityEvent struct {
 	Reason                 string
 	DetailCode             string
 	OccurredAt             time.Time
+	QueryMetadata          *AuditQueryMetadata
+	ResultCount            *int64
+}
+
+type AuditQueryMetadata struct {
+	IdentityID            string     `json:"identity_id,omitempty"`
+	ServiceAccountID      string     `json:"service_account_id,omitempty"`
+	ResponsibleIdentityID string     `json:"responsible_identity_id,omitempty"`
+	From                  *time.Time `json:"from,omitempty"`
+	To                    *time.Time `json:"to,omitempty"`
+	ModelFilter           bool       `json:"model_filter"`
+	CaptureStatus         string     `json:"capture_status,omitempty"`
+	Outcome               string     `json:"outcome,omitempty"`
+	OwnerKind             string     `json:"owner_kind,omitempty"`
+	FullText              bool       `json:"full_text"`
+	BatchSize             int        `json:"batch_size"`
 }
 
 type SecurityEventWriter interface {

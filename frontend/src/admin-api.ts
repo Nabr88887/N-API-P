@@ -34,6 +34,10 @@ export type InvestigationCase = { id: string; subject_identity_id: string; polic
 export type InvestigationCandidate = { audit_id: string; capture_status: AuditCaptureStatus; created_at: string; expires_at: string }
 export type InvestigationContent = { status: 'complete' | 'truncated' | 'incomplete' | 'unavailable'; json?: unknown; fragment?: string }
 export type InvestigationRawView = { audit_id: string; request: InvestigationContent; response: InvestigationContent }
+export type ElevatedAuditGrant = { id: string; status: 'active'; issued_at: string; expires_at: string }
+export type ElevatedAuditUsage = { input_tokens: number; output_tokens: number; total_tokens: number }
+export type ElevatedAuditRecord = { id: string; request_id: string; owner_kind: 'personal' | 'service'; identity_id?: string; service_account_id?: string; responsible_identity_id?: string; team_id: string; model_id: string; request_capture_status: AuditCaptureStatus | 'unavailable'; response_capture_status: AuditCaptureStatus | 'unavailable'; outcome: AuditOutcome; created_at: string; updated_at: string; completed_at?: string; request?: unknown; response?: unknown; request_fragment?: string; response_fragment?: string; usage?: ElevatedAuditUsage }
+export type ElevatedAuditQuery = { identity_id?: string; service_account_id?: string; responsible_identity_id?: string; from?: string; to?: string; model_id?: string; capture_status?: AuditCaptureStatus; outcome?: AuditOutcome; owner_kind?: 'personal' | 'service'; full_text?: string; audit_ids?: string[]; cursor?: string; limit?: number }
 
 export class AdminAPIError extends Error {
   constructor(public readonly code: string) { super(code) }
@@ -71,6 +75,11 @@ export interface AdminPortalClient {
   issueInvestigationGrant?(caseID: string): Promise<{ case_id: string; expires_at: string }>
   viewInvestigationAudit?(caseID: string, auditID: string): Promise<InvestigationRawView>
   closeInvestigationCase?(caseID: string, disposition: InvestigationDisposition, note: string): Promise<void>
+  issueElevatedAuditGrant?(purpose: string): Promise<ElevatedAuditGrant>
+  revokeElevatedAuditGrant?(): Promise<void>
+  queryElevatedAudits?(query: ElevatedAuditQuery): Promise<PagedResponse<ElevatedAuditRecord>>
+  batchViewElevatedAudits?(auditIDs: string[]): Promise<PagedResponse<ElevatedAuditRecord>>
+  exportElevatedAudits?(query: ElevatedAuditQuery, signal?: AbortSignal): Promise<Blob>
 }
 
 export function createAdminPortalClient(): AdminPortalClient {
@@ -79,7 +88,7 @@ export function createAdminPortalClient(): AdminPortalClient {
     if (init.body !== undefined) headers.set('Content-Type', 'application/json')
 	const csrfToken = currentCSRFToken()
 	if (init.method && init.method !== 'GET' && csrfToken) headers.set('X-CSRF-Token', csrfToken)
-    const response = await fetch(path, { ...init, headers, credentials: 'same-origin' })
+    const response = await fetch(path, { ...init, headers, credentials: 'same-origin', cache: 'no-store' })
 	rememberCSRFToken(response.headers.get('X-CSRF-Token'))
     if (!response.ok) {
       let code = 'INTERNAL_ERROR'
@@ -126,5 +135,33 @@ export function createAdminPortalClient(): AdminPortalClient {
     issueInvestigationGrant: (caseID) => request(`/api/v1/investigation-cases/${encodeURIComponent(caseID)}/access-grants`, { method: 'POST', body: JSON.stringify({ confirmed: true }) }),
     viewInvestigationAudit: (caseID, auditID) => request(`/api/v1/investigation-cases/${encodeURIComponent(caseID)}/audits/${encodeURIComponent(auditID)}/raw-views`, { method: 'POST', body: '{}' }),
     closeInvestigationCase: (caseID, disposition, note) => request(`/api/v1/investigation-cases/${encodeURIComponent(caseID)}/closures`, { method: 'POST', body: JSON.stringify({ disposition, note, confirmed: true }) }),
+    issueElevatedAuditGrant: (purpose) => request('/api/v1/admin/audit-access/grants', { method: 'POST', body: JSON.stringify({ purpose }) }),
+    revokeElevatedAuditGrant: () => request('/api/v1/admin/audit-access/grants/current', { method: 'DELETE', body: '{}' }),
+    queryElevatedAudits: (query) => request('/api/v1/audits/query', { method: 'POST', body: JSON.stringify(serializeElevatedAuditQuery(query)) }),
+    batchViewElevatedAudits: (auditIDs) => request('/api/v1/audits/batch', { method: 'POST', body: JSON.stringify({ audit_ids: auditIDs, limit: 1000 }) }),
+    exportElevatedAudits: async (query, signal) => {
+      const headers = new Headers({ 'Content-Type': 'application/json' })
+      const csrfToken = currentCSRFToken()
+      if (csrfToken) headers.set('X-CSRF-Token', csrfToken)
+      const response = await fetch('/api/v1/audits/exports', { method: 'POST', body: JSON.stringify(serializeElevatedAuditQuery(query)), headers, credentials: 'same-origin', cache: 'no-store', signal })
+      rememberCSRFToken(response.headers.get('X-CSRF-Token'))
+      if (!response.ok) {
+        let code = 'INTERNAL_ERROR'
+        try { code = (await response.json() as { error?: { code?: string } }).error?.code ?? code } catch { /* stable transport fallback */ }
+        throw new AdminAPIError(code)
+      }
+      try { return await response.blob() } catch (reason) {
+        if (signal?.aborted) throw reason
+        throw new AdminAPIError('EXPORT_INCOMPLETE')
+      }
+    },
+  }
+}
+
+function serializeElevatedAuditQuery(query: ElevatedAuditQuery): ElevatedAuditQuery {
+  return {
+    ...query,
+    from: query.from ? new Date(query.from).toISOString() : undefined,
+    to: query.to ? new Date(query.to).toISOString() : undefined,
   }
 }

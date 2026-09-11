@@ -29,6 +29,7 @@ var ErrInvalidApplication = errors.New("invalid application configuration")
 
 type Application struct {
 	DB               *sql.DB
+	bulkAuditDB      *sql.DB
 	Server           *http.Server
 	Jobs             *audit.LifecycleJob
 	recoverAuditGate func(context.Context, time.Time, time.Time) error
@@ -65,11 +66,15 @@ func New(cfg config.Config, secrets *config.Secrets) (*Application, error) {
 	if err != nil {
 		return nil, err
 	}
+	bulkAuditDB, err := sql.Open("pgx", cfg.DatabaseURL)
+	if err != nil {
+		return nil, errors.Join(err, db.Close())
+	}
 	closeOnError := func(err error) (*Application, error) {
-		_ = db.Close()
-		return nil, err
+		return nil, errors.Join(err, bulkAuditDB.Close(), db.Close())
 	}
 	repository := database.NewRepository(db)
+	bulkAuditRepository := newElevatedAuditRepository(bulkAuditDB)
 	passwords := access.NewArgon2idPasswordHasher()
 	metrics := observability.NewMetrics()
 
@@ -112,6 +117,18 @@ func New(cfg config.Config, secrets *config.Secrets) (*Application, error) {
 	if err != nil {
 		return closeOnError(err)
 	}
+	elevatedAccess, err := audit.NewElevatedAuditAccessService(bulkAuditRepository)
+	if err != nil {
+		return closeOnError(err)
+	}
+	elevatedQuery, err := audit.NewElevatedAuditQueryService(bulkAuditRepository, envelope)
+	if err != nil {
+		return closeOnError(err)
+	}
+	elevatedExport, err := audit.NewElevatedAuditExportService(elevatedQuery)
+	if err != nil {
+		return closeOnError(err)
+	}
 	operationsService, err := operations.NewService(repository)
 	if err != nil {
 		return closeOnError(err)
@@ -127,6 +144,7 @@ func New(cfg config.Config, secrets *config.Secrets) (*Application, error) {
 		return closeOnError(err)
 	}
 	gate.SetMetrics(metrics)
+	elevatedExport.SetFailureGate(gate)
 	capture, err := audit.NewInitialCaptureServiceWithGate(envelope, repository, gate)
 	if err != nil {
 		return closeOnError(err)
@@ -189,7 +207,8 @@ func New(cfg config.Config, secrets *config.Secrets) (*Application, error) {
 			Models: modelAllowlist, Retention: retention, Administration: administration,
 			Audits: metadata, RawView: rawView, Operations: operationsService,
 			Offboarding: offboarding, ServiceAccount: serviceAccounts, Identity: access.NewIdentityService(repository),
-			SecurityEvents: administration, Investigations: investigations,
+			SecurityEvents: administration, Investigations: investigations, ElevatedAccess: elevatedAccess,
+			ElevatedQuery: elevatedQuery, ElevatedExport: elevatedExport,
 		},
 	})
 	if err != nil {
@@ -234,7 +253,7 @@ func New(cfg config.Config, secrets *config.Secrets) (*Application, error) {
 	mux.Handle("/", embeddedAssets(assets))
 	handler := observability.NewRequestIDMiddlewareWithMetrics(mux, observability.DefaultLogger(), metrics)
 	return &Application{
-		DB: db, Jobs: lifecycle, recoverAuditGate: gate.Recover, now: time.Now,
+		DB: db, bulkAuditDB: bulkAuditDB, Jobs: lifecycle, recoverAuditGate: gate.Recover, now: time.Now,
 		Server: &http.Server{Addr: cfg.ListenAddress, Handler: handler},
 	}, nil
 }
@@ -243,7 +262,17 @@ func (application *Application) Close() error {
 	if application == nil || application.DB == nil {
 		return nil
 	}
-	return application.DB.Close()
+	var bulkErr error
+	if application.bulkAuditDB != nil {
+		bulkErr = application.bulkAuditDB.Close()
+	}
+	return errors.Join(bulkErr, application.DB.Close())
+}
+
+func newElevatedAuditRepository(pool *sql.DB) *database.Repository {
+	pool.SetMaxOpenConns(8)
+	pool.SetMaxIdleConns(2)
+	return database.NewRepository(pool)
 }
 
 func trustedOperatorRequest(trustedProxyCIDRs []*net.IPNet) func(*http.Request) bool {

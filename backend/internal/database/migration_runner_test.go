@@ -91,7 +91,7 @@ func TestLoadMigrationRequestRejectsInvalidBoundaryInputsWithoutLeakingValues(t 
 			name: "source version beyond image target",
 			values: map[string]string{
 				"N_API_P_DATABASE_URL":                      "postgres://database.internal/n_api_p",
-				"N_API_P_MIGRATION_EXPECTED_SOURCE_VERSION": "9",
+				"N_API_P_MIGRATION_EXPECTED_SOURCE_VERSION": "10",
 				"N_API_P_MIGRATION_RECOVERY_MANIFEST_PATH":  validPath,
 			},
 		},
@@ -246,6 +246,23 @@ func TestInvestigationCandidatesKeepAuditUUIDSnapshotsIndependentOfAuditRows(t *
 	}
 }
 
+func TestElevatedAuditGrantMigrationIsMetadataOnly(t *testing.T) {
+	content, err := fs.ReadFile(embeddedForwardMigrations, "migrations/000009_elevated_audit_access.up.sql")
+	if err != nil {
+		t.Fatalf("read elevated audit migration: %v", err)
+	}
+	source := string(content)
+	if !strings.Contains(source, "CREATE TABLE elevated_audit_grants") {
+		t.Fatal("elevated audit migration must create the grant table")
+	}
+	if strings.Contains(source, "audit_raw_content") || strings.Contains(source, "ciphertext") || strings.Contains(source, "INSERT INTO") {
+		t.Fatal("elevated audit migration must not copy or alter raw content")
+	}
+	if !strings.Contains(source, "ADD COLUMN session_id") || !strings.Contains(source, "ADD COLUMN grant_id") {
+		t.Fatal("elevated audit migration must persist grant session and grant identity on events")
+	}
+}
+
 func TestValidateProductionSchemaInventoryUsesVersionedExactAllowlist(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -257,7 +274,8 @@ func TestValidateProductionSchemaInventoryUsesVersionedExactAllowlist(t *testing
 		{name: "metadata before investigations", version: 3, tables: append([]string{"schema_migrations", "audit_raw_content"}, unqualifiedTableNames(requiredRecoveryTables[:12])...)},
 		{name: "metadata retention", version: 6, tables: append([]string{"schema_migrations", "audit_raw_content"}, unqualifiedTableNames(requiredRecoveryTables[:12])...)},
 		{name: "metadata hardening", version: 7, tables: append([]string{"schema_migrations", "audit_raw_content"}, unqualifiedTableNames(requiredRecoveryTables[:12])...)},
-		{name: "target", version: 8, tables: append([]string{"schema_migrations", "audit_raw_content"}, unqualifiedTableNames(requiredRecoveryTables)...)},
+		{name: "investigation target", version: 8, tables: append([]string{"schema_migrations", "audit_raw_content"}, unqualifiedTableNames(requiredRecoveryTables)...)},
+		{name: "elevated audit target", version: 9, tables: append([]string{"schema_migrations", "audit_raw_content", "elevated_audit_grants"}, unqualifiedTableNames(requiredRecoveryTables)...)},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

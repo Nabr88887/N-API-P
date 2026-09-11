@@ -18,6 +18,8 @@ var (
 	ErrInvalidElevatedAuditAccess = errors.New("invalid elevated audit access request")
 	ErrElevatedAuditForbidden     = errors.New("elevated audit access forbidden")
 	ErrElevatedAuditGrantNotFound = errors.New("elevated audit grant not found")
+	ErrElevatedAuditGrantExpired  = errors.New("elevated audit grant expired")
+	ErrElevatedAuditGrantRevoked  = errors.New("elevated audit grant revoked")
 )
 
 type ElevatedAuditGrant struct {
@@ -160,4 +162,3 @@ func validElevatedAuditSession(session access.ActivePortalSession, now time.Time
 	return strings.TrimSpace(session.IdentityID) != "" && strings.TrimSpace(session.SessionID) != "" &&
 		session.Role == access.RoleSystemAdministrator && session.IdleExpiresAt.After(now) && session.AbsoluteExpiresAt.After(now)
 }
-

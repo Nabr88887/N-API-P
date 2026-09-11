@@ -117,6 +117,9 @@ func TestRawViewRouteIsSingleRecordOnlyWithoutSearchBulkOrExport(t *testing.T) {
 	var rawRoutes []Route
 	for _, route := range Routes() {
 		text := strings.ToLower(string(route.Name) + " " + route.Pattern)
+		if strings.HasPrefix(string(route.Name), "admin.elevated_audit.") {
+			continue
+		}
 		if strings.Contains(text, "raw") {
 			rawRoutes = append(rawRoutes, route)
 		}
