@@ -16,7 +16,7 @@ func TestAuditPolicySchemaContract(t *testing.T) {
 		"audit_records":     {"id", "request_id", "key_id", "owner_kind", "identity_id", "service_account_id", "responsible_identity_id", "team_id", "model_id", "capture_status", "outcome", "upstream_request_id", "upstream_http_status", "error_code", "finish_reason", "observed_request_bytes", "observed_response_bytes", "created_at", "updated_at", "completed_at"},
 		"audit_raw_content": {"audit_id", "content_kind", "compression", "ciphertext", "cipher_nonce", "wrapped_data_key", "wrap_nonce", "key_version", "created_at", "expires_at"},
 		"usage_records":     {"id", "audit_id", "request_id", "key_id", "owner_kind", "identity_id", "service_account_id", "responsible_identity_id", "team_id", "model_id", "upstream_request_id", "outcome", "usage_reported", "input_tokens", "output_tokens", "total_tokens", "price_version", "input_unit_price", "output_unit_price", "calculated_amount", "created_at"},
-		"security_events":   {"id", "event_type", "actor_identity_id", "target_identity_id", "target_service_account_id", "target_key_id", "target_audit_id", "investigation_case_id", "request_id", "outcome", "reason", "detail_code", "occurred_at", "retain_until"},
+		"security_events":   {"id", "event_type", "actor_identity_id", "target_identity_id", "target_service_account_id", "target_key_id", "target_audit_id", "investigation_case_id", "request_id", "outcome", "reason", "detail_code", "occurred_at", "retain_until", "session_id", "grant_id", "query_metadata", "result_count"},
 		"operational_state": {"id", "raw_retention_days", "audit_gate_state", "audit_gate_reason_code", "gate_changed_at", "last_persistence_probe_at", "last_cleanup_at", "deletion_overdue_since", "updated_at"},
 	}
 

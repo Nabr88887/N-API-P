@@ -17,6 +17,7 @@ func TestRepositoryRejectsInitialGrantBoundToAnotherSessionIdentity(t *testing.T
 	db, _ := migrateRepositorySchema(t)
 	fixture := insertAuditPolicyFixture(t, db)
 	insertRequestRawContent(t, db, fixture)
+	mustExec(t, db, `UPDATE identities SET role = 'employee' WHERE id = $1`, fixture.identityID)
 	otherIdentityID := "82000000-0000-0000-0000-000000000002"
 	sessionID := "85000000-0000-0000-0000-000000000001"
 	now := fixture.now.Add(time.Minute)
@@ -53,9 +54,10 @@ func TestRepositoryCapsInitialGrantAtSessionAbsoluteExpiry(t *testing.T) {
 	db, _ := migrateRepositorySchema(t)
 	fixture := insertAuditPolicyFixture(t, db)
 	insertRequestRawContent(t, db, fixture)
+	mustExec(t, db, `UPDATE identities SET role = 'employee' WHERE id = $1`, fixture.identityID)
 	sessionID := "85000000-0000-0000-0000-000000000011"
 	now := fixture.now.Add(time.Minute)
-	mustExec(t, db, `INSERT INTO sessions (id, identity_id, token_hash, csrf_token_hash, created_at, last_seen_at, idle_expires_at, absolute_expires_at, reauthenticated_until) VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8)`, sessionID, fixture.identityID, []byte("session-token-hash-2"), []byte("session-csrf-hash-2"), fixture.now.Add(-time.Hour), now.Add(time.Hour), now.Add(10*time.Minute), now.Add(time.Hour))
+	mustExec(t, db, `INSERT INTO sessions (id, identity_id, token_hash, csrf_token_hash, created_at, last_seen_at, idle_expires_at, absolute_expires_at, reauthenticated_until) VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8)`, sessionID, fixture.identityID, []byte("session-token-hash-2"), []byte("session-csrf-hash-2"), fixture.now.Add(-time.Hour), now.Add(10*time.Minute), now.Add(time.Hour), now.Add(time.Hour))
 
 	caseID := "83000000-0000-0000-0000-000000000011"
 	grantID := "85000000-0000-0000-0000-000000000012"

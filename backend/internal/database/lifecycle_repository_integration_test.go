@@ -145,7 +145,7 @@ SELECT
     md5('raw-cleanup-audit-' || value::text)::uuid,
     'request', 'gzip', decode(repeat('aa', 17), 'hex'), decode(repeat('00', 12), 'hex'),
     decode(repeat('bb', 17), 'hex'), decode(repeat('11', 12), 'hex'), 1, $1,
-    CASE WHEN value <= $2 THEN $3 ELSE $4 END
+     CASE WHEN value <= $2 THEN $3::timestamptz ELSE $4::timestamptz END
 FROM generate_series(1, $5) AS series(value)`, createdAt, audit.RawContentCleanupBatchSize, overdueExpiresAt, recentExpiresAt, rowCount)
 
 	lag, err := repository.ObserveDeletionLag(context.Background(), cleanupAt)

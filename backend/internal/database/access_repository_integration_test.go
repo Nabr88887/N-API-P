@@ -211,6 +211,7 @@ func TestAccessRepositoryChangesEmailInPlaceAndRevokesOldCodes(t *testing.T) {
 		t.Fatalf("CreateInvitation() error = %v", err)
 	}
 	mustExec(t, db, `INSERT INTO api_keys (id, identity_id, kind, name, prefix, verification_hash, status) VALUES ($1, $2, 'personal', 'owned', 'nap_owned', $3, 'active')`, "42000000-0000-0000-0000-000000000030", record.IdentityID, []byte("owned-hash"))
+	mustExec(t, db, `UPDATE identities SET status = 'active' WHERE id = $1`, record.IdentityID)
 
 	err := repository.ChangeIdentityEmail(context.Background(), emailChangeRecord(record.IdentityID, "new@example.internal", accessAdminID, "72000000-0000-0000-0000-000000000030"))
 	if err != nil {

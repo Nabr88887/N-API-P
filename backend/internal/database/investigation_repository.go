@@ -484,7 +484,10 @@ func sameInvestigationCandidates(left, right []audit.InvestigationCandidate) boo
 		return false
 	}
 	for index := range left {
-		if left[index] != right[index] {
+		if left[index].AuditID != right[index].AuditID ||
+			left[index].CaptureStatus != right[index].CaptureStatus ||
+			!left[index].CreatedAt.Equal(right[index].CreatedAt) ||
+			!left[index].ExpiresAt.Equal(right[index].ExpiresAt) {
 			return false
 		}
 	}

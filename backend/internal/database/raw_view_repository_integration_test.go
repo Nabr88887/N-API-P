@@ -17,7 +17,7 @@ import (
 func TestRepositoryRawViewDecryptsBothContentKindsAndAuditsSuccess(t *testing.T) {
 	db, _ := migrateRepositorySchema(t)
 	fixture := insertAuditPolicyFixture(t, db)
-	now := time.Date(2026, time.September, 8, 9, 10, 11, 123456789, time.UTC)
+	now := time.Now().UTC()
 	createdAt := now.Add(-time.Minute)
 	expiresAt := now.Add(time.Hour)
 	key := bytes.Repeat([]byte{0x61}, 32)
@@ -43,13 +43,15 @@ func TestRepositoryRawViewDecryptsBothContentKindsAndAuditsSuccess(t *testing.T)
 	insertRepositoryRawViewContent(t, db, fixture.auditID, "response", responseContent, createdAt, expiresAt)
 
 	grantUntil := now.Add(time.Minute)
+	mustExec(t, db, `INSERT INTO sessions (id, identity_id, token_hash, csrf_token_hash, created_at, last_seen_at, idle_expires_at, absolute_expires_at, reauthenticated_until) VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8)`, "85000000-0000-0000-0000-000000000020", fixture.identityID, []byte("raw-view-session-token"), []byte("raw-view-session-csrf"), now.Add(-time.Hour), now.Add(time.Hour), now.Add(12*time.Hour), grantUntil)
 	service, err := audit.NewRawViewService(NewRepository(db), envelope)
 	if err != nil {
 		t.Fatalf("NewRawViewService() error = %v", err)
 	}
 	view, err := service.Inspect(context.Background(), audit.RawViewInput{
 		Session: access.ActivePortalSession{
-			SessionID: "session-raw-view", IdentityID: fixture.identityID, Role: access.RoleSystemAdministrator,
+			SessionID: "85000000-0000-0000-0000-000000000020", IdentityID: fixture.identityID, Role: access.RoleSystemAdministrator,
+			IdleExpiresAt: now.Add(time.Hour), AbsoluteExpiresAt: now.Add(12 * time.Hour),
 			ReauthenticatedUntil: &grantUntil,
 		},
 		AuditID: fixture.auditID, RequestID: fixture.requestID, Reason: "synthetic investigation",
