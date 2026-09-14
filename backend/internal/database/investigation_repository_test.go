@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"n-api-p/internal/audit"
 )
 
 func TestInvestigationGrantSessionVerificationRequiresRecentReauthentication(t *testing.T) {
@@ -31,5 +33,19 @@ func TestInvestigationCursorRoundTripsNanosecondTimestamp(t *testing.T) {
 	}
 	if strings.Count(cursor, ".") < 2 {
 		t.Fatalf("cursor %q does not exercise fractional timestamp parsing", cursor)
+	}
+}
+
+func TestSameInvestigationCandidatesComparesInstantsAndFields(t *testing.T) {
+	utc := time.Date(2026, 9, 14, 8, 0, 0, 123456789, time.UTC)
+	local := utc.In(time.FixedZone("synthetic", 9*60*60))
+	left := []audit.InvestigationCandidate{{AuditID: "83000000-0000-0000-0000-000000000001", CaptureStatus: audit.CaptureStatusPending, CreatedAt: utc, ExpiresAt: utc.Add(time.Hour)}}
+	right := []audit.InvestigationCandidate{{AuditID: "83000000-0000-0000-0000-000000000001", CaptureStatus: audit.CaptureStatusPending, CreatedAt: local, ExpiresAt: local.Add(time.Hour)}}
+	if !sameInvestigationCandidates(left, right) {
+		t.Fatal("candidates with equal instants but different locations were rejected")
+	}
+	right[0].CaptureStatus = audit.CaptureStatusComplete
+	if sameInvestigationCandidates(left, right) {
+		t.Fatal("candidates with changed capture status were accepted")
 	}
 }

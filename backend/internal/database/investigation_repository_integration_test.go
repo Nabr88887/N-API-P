@@ -16,9 +16,12 @@ import (
 func TestRepositoryRejectsInitialGrantBoundToAnotherSessionIdentity(t *testing.T) {
 	db, _ := migrateRepositorySchema(t)
 	fixture := insertAuditPolicyFixture(t, db)
-	insertRequestRawContent(t, db, fixture)
-	mustExec(t, db, `UPDATE identities SET role = 'employee' WHERE id = $1`, fixture.identityID)
-	otherIdentityID := "82000000-0000-0000-0000-000000000002"
+	subjectIdentityID := "82000000-0000-0000-0000-000000000002"
+	subjectKeyID := "83000000-0000-0000-0000-000000000002"
+	subjectAuditID := "84000000-0000-0000-0000-000000000002"
+	subjectRequestID := "87000000-0000-0000-0000-000000000002"
+	insertEmployeeAuditCandidate(t, db, fixture, subjectIdentityID, subjectKeyID, subjectAuditID, subjectRequestID)
+	otherIdentityID := "82000000-0000-0000-0000-000000000003"
 	sessionID := "85000000-0000-0000-0000-000000000001"
 	now := fixture.now.Add(time.Minute)
 	mustExec(t, db, `INSERT INTO identities (id, email, role, status) VALUES ($1, $2, 'system_administrator', 'active')`, otherIdentityID, "other-auditor@example.internal")
@@ -29,18 +32,18 @@ func TestRepositoryRejectsInitialGrantBoundToAnotherSessionIdentity(t *testing.T
 	repository := NewRepository(db)
 	err := repository.CreateInvestigationCase(context.Background(), audit.InvestigationCaseCreate{
 		Case: audit.InvestigationCase{
-			ID: caseID, SubjectIdentityID: fixture.identityID, PolicyConcern: "policy concern", Reason: "investigation reason",
+			ID: caseID, SubjectIdentityID: subjectIdentityID, PolicyConcern: "policy concern", Reason: "investigation reason",
 			StartAt: fixture.now.Add(-time.Hour), EndAt: now, Status: audit.InvestigationCaseOpen, CreatedBy: fixture.identityID, CreatedAt: now,
 		},
-		Candidates: []audit.InvestigationCandidate{{AuditID: fixture.auditID, CaptureStatus: audit.CaptureStatusPending, CreatedAt: fixture.now, ExpiresAt: fixture.now.Add(24 * time.Hour)}},
+		Candidates: []audit.InvestigationCandidate{{AuditID: subjectAuditID, CaptureStatus: audit.CaptureStatusPending, CreatedAt: fixture.now, ExpiresAt: fixture.now.Add(24 * time.Hour)}},
 		Grant:      audit.AccessGrant{ID: grantID, CaseID: caseID, ActorIdentityID: fixture.identityID, SessionID: sessionID, IssuedAt: now, ExpiresAt: now.Add(30 * time.Minute)},
 		Event: access.SecurityEvent{
 			ID: "86000000-0000-0000-0000-000000000010", EventType: "investigation_case", ActorIdentityID: fixture.identityID,
-			TargetIdentityID: fixture.identityID, InvestigationCaseID: caseID, RequestID: fixture.requestID,
+			TargetIdentityID: subjectIdentityID, InvestigationCaseID: caseID, RequestID: fixture.requestID,
 			Outcome: access.SecurityEventSuccess, Reason: "investigation reason", DetailCode: "case_created", OccurredAt: now,
 		},
 		CandidateQuery: audit.InvestigationCandidateQuery{
-			SubjectIdentityID: fixture.identityID, StartAt: fixture.now.Add(-time.Hour), EndAt: now, VisibleAt: now, Limit: 101,
+			SubjectIdentityID: subjectIdentityID, StartAt: fixture.now.Add(-time.Hour), EndAt: now, VisibleAt: now, Limit: 101,
 		},
 	})
 	if !errors.Is(err, audit.ErrInvestigationForbidden) {
@@ -53,29 +56,32 @@ func TestRepositoryRejectsInitialGrantBoundToAnotherSessionIdentity(t *testing.T
 func TestRepositoryCapsInitialGrantAtSessionAbsoluteExpiry(t *testing.T) {
 	db, _ := migrateRepositorySchema(t)
 	fixture := insertAuditPolicyFixture(t, db)
-	insertRequestRawContent(t, db, fixture)
-	mustExec(t, db, `UPDATE identities SET role = 'employee' WHERE id = $1`, fixture.identityID)
+	subjectIdentityID := "82000000-0000-0000-0000-000000000002"
+	subjectKeyID := "83000000-0000-0000-0000-000000000002"
+	subjectAuditID := "84000000-0000-0000-0000-000000000002"
+	subjectRequestID := "87000000-0000-0000-0000-000000000002"
+	insertEmployeeAuditCandidate(t, db, fixture, subjectIdentityID, subjectKeyID, subjectAuditID, subjectRequestID)
 	sessionID := "85000000-0000-0000-0000-000000000011"
 	now := fixture.now.Add(time.Minute)
-	mustExec(t, db, `INSERT INTO sessions (id, identity_id, token_hash, csrf_token_hash, created_at, last_seen_at, idle_expires_at, absolute_expires_at, reauthenticated_until) VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8)`, sessionID, fixture.identityID, []byte("session-token-hash-2"), []byte("session-csrf-hash-2"), fixture.now.Add(-time.Hour), now.Add(10*time.Minute), now.Add(time.Hour), now.Add(time.Hour))
+	mustExec(t, db, `INSERT INTO sessions (id, identity_id, token_hash, csrf_token_hash, created_at, last_seen_at, idle_expires_at, absolute_expires_at, reauthenticated_until) VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8)`, sessionID, fixture.identityID, []byte("session-token-hash-2"), []byte("session-csrf-hash-2"), fixture.now.Add(-time.Hour), now.Add(5*time.Minute), now.Add(10*time.Minute), now.Add(time.Hour))
 
 	caseID := "83000000-0000-0000-0000-000000000011"
 	grantID := "85000000-0000-0000-0000-000000000012"
 	repository := NewRepository(db)
 	err := repository.CreateInvestigationCase(context.Background(), audit.InvestigationCaseCreate{
 		Case: audit.InvestigationCase{
-			ID: caseID, SubjectIdentityID: fixture.identityID, PolicyConcern: "policy concern", Reason: "investigation reason",
+			ID: caseID, SubjectIdentityID: subjectIdentityID, PolicyConcern: "policy concern", Reason: "investigation reason",
 			StartAt: fixture.now.Add(-time.Hour), EndAt: now, Status: audit.InvestigationCaseOpen, CreatedBy: fixture.identityID, CreatedAt: now,
 		},
-		Candidates: []audit.InvestigationCandidate{{AuditID: fixture.auditID, CaptureStatus: audit.CaptureStatusPending, CreatedAt: fixture.now, ExpiresAt: fixture.now.Add(24 * time.Hour)}},
+		Candidates: []audit.InvestigationCandidate{{AuditID: subjectAuditID, CaptureStatus: audit.CaptureStatusPending, CreatedAt: fixture.now, ExpiresAt: fixture.now.Add(24 * time.Hour)}},
 		Grant:      audit.AccessGrant{ID: grantID, CaseID: caseID, ActorIdentityID: fixture.identityID, SessionID: sessionID, IssuedAt: now, ExpiresAt: now.Add(30 * time.Minute)},
 		Event: access.SecurityEvent{
 			ID: "86000000-0000-0000-0000-000000000011", EventType: "investigation_case", ActorIdentityID: fixture.identityID,
-			TargetIdentityID: fixture.identityID, InvestigationCaseID: caseID, RequestID: fixture.requestID,
+			TargetIdentityID: subjectIdentityID, InvestigationCaseID: caseID, RequestID: fixture.requestID,
 			Outcome: access.SecurityEventSuccess, Reason: "investigation reason", DetailCode: "case_created", OccurredAt: now,
 		},
 		CandidateQuery: audit.InvestigationCandidateQuery{
-			SubjectIdentityID: fixture.identityID, StartAt: fixture.now.Add(-time.Hour), EndAt: now, VisibleAt: now, Limit: 101,
+			SubjectIdentityID: subjectIdentityID, StartAt: fixture.now.Add(-time.Hour), EndAt: now, VisibleAt: now, Limit: 101,
 		},
 	})
 	if !errors.Is(err, audit.ErrInvestigationForbidden) {
@@ -83,6 +89,14 @@ func TestRepositoryCapsInitialGrantAtSessionAbsoluteExpiry(t *testing.T) {
 	}
 	assertInvestigationRowCount(t, db, "investigation_cases", caseID, 0)
 	assertInvestigationRowCount(t, db, "investigation_access_grants", grantID, 0)
+}
+
+func insertEmployeeAuditCandidate(t *testing.T, db *sql.DB, fixture auditPolicyFixture, identityID, keyID, auditID, requestID string) {
+	t.Helper()
+	mustExec(t, db, `INSERT INTO identities (id, email, role, status) VALUES ($1, $2, 'employee', 'active')`, identityID, "subject-employee@example.internal")
+	mustExec(t, db, `INSERT INTO api_keys (id, identity_id, kind, name, prefix, verification_hash, status, created_at) VALUES ($1, $2, 'personal', 'subject-key', 'nap_subject', $3, 'active', $4)`, keyID, identityID, []byte("subject-key-hash"), fixture.now)
+	mustExec(t, db, `INSERT INTO audit_records (id, request_id, key_id, owner_kind, identity_id, team_id, model_id, capture_status, outcome, observed_request_bytes, observed_response_bytes, created_at, updated_at) VALUES ($1, $2, $3, 'personal', $4, $5, 'gpt-test', 'pending', 'pending', 128, 0, $6, $6)`, auditID, requestID, keyID, identityID, fixture.teamID, fixture.now)
+	mustExec(t, db, `INSERT INTO audit_raw_content (audit_id, content_kind, compression, ciphertext, cipher_nonce, wrapped_data_key, wrap_nonce, key_version, created_at, expires_at) VALUES ($1, 'request', 'gzip', $2, $3, $4, $5, 1, $6, $7)`, auditID, []byte("encrypted-subject-request-payload-and-tag"), make([]byte, 12), []byte("wrapped-subject-data-key-and-tag"), make([]byte, 12), fixture.now, fixture.now.Add(24*time.Hour))
 }
 
 func TestRepositoryOnlySelectsEmployeeInvestigationSubjects(t *testing.T) {

@@ -81,6 +81,21 @@ WHERE id = $1
   AND session_id = $3
   AND revoked_at IS NULL`
 
+const revokeElevatedAuditGrantsForIdentitySQL = `
+WITH revoked AS (
+    UPDATE elevated_audit_grants
+    SET revoked_at = $1
+    WHERE actor_identity_id = $2 AND revoked_at IS NULL
+    RETURNING id, actor_identity_id, session_id, purpose
+)
+INSERT INTO security_events (
+    id, event_type, actor_identity_id, session_id, grant_id,
+    request_id, outcome, reason, detail_code, occurred_at
+)
+SELECT gen_random_uuid(), 'audit_grant_revoked', actor_identity_id, session_id, id,
+       $3, 'success', purpose, 'identity_role_changed', $1
+FROM revoked`
+
 func (r *Repository) CreateElevatedAuditGrant(ctx context.Context, grant audit.ElevatedAuditGrant, event access.SecurityEvent) (err error) {
 	if r == nil || r.db == nil || !validElevatedAuditGrant(grant) || !validElevatedAuditGrantEvent(event, grant) {
 		return audit.ErrInvalidElevatedAuditAccess

@@ -59,6 +59,57 @@ func TestEmptyMigrationBaselineIsReversible(t *testing.T) {
 	assertNoProductTables(t, schemaDB, schemaName)
 }
 
+func TestElevatedAuditMigrationRollsBackAndReapplies(t *testing.T) {
+	databaseURL := os.Getenv("N_API_P_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Fatal("N_API_P_TEST_DATABASE_URL is required for integration tests")
+	}
+
+	const schemaName = "elevated_audit_migration_test"
+	adminDB := openTestDatabase(t, databaseURL)
+	resetTestSchema(t, adminDB, schemaName)
+	schemaDB := openTestDatabase(t, databaseURLWithSearchPath(t, databaseURL, schemaName))
+	migrator := openTestMigrator(t, schemaDB, schemaName, allMigrationFiles)
+
+	if err := migrator.Up(); err != nil {
+		t.Fatalf("apply elevated audit migrations: %v", err)
+	}
+	assertMigrationVersion(t, migrator, 9)
+	assertElevatedAuditMigrationObjects(t, schemaDB, schemaName, true)
+
+	if err := migrator.Steps(-1); err != nil {
+		t.Fatalf("roll back elevated audit migration: %v", err)
+	}
+	assertMigrationVersion(t, migrator, 8)
+	assertElevatedAuditMigrationObjects(t, schemaDB, schemaName, false)
+
+	if err := migrator.Up(); err != nil {
+		t.Fatalf("reapply elevated audit migration: %v", err)
+	}
+	assertMigrationVersion(t, migrator, 9)
+	assertElevatedAuditMigrationObjects(t, schemaDB, schemaName, true)
+}
+
+func assertElevatedAuditMigrationObjects(t *testing.T, db *sql.DB, schemaName string, wantPresent bool) {
+	t.Helper()
+	var tablePresent bool
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'elevated_audit_grants')`, schemaName).Scan(&tablePresent); err != nil {
+		t.Fatalf("query elevated audit grant table: %v", err)
+	}
+	if tablePresent != wantPresent {
+		t.Fatalf("elevated_audit_grants present = %t, want %t", tablePresent, wantPresent)
+	}
+	for _, column := range []string{"session_id", "grant_id", "query_metadata", "result_count"} {
+		var columnPresent bool
+		if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'security_events' AND column_name = $2)`, schemaName, column).Scan(&columnPresent); err != nil {
+			t.Fatalf("query security event column %s: %v", column, err)
+		}
+		if columnPresent != wantPresent {
+			t.Fatalf("security_events.%s present = %t, want %t", column, columnPresent, wantPresent)
+		}
+	}
+}
+
 func openTestDatabase(t *testing.T, databaseURL string) *sql.DB {
 	t.Helper()
 

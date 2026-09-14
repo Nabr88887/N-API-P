@@ -638,6 +638,11 @@ func (r *Repository) ChangeIdentityRole(ctx context.Context, change access.RoleC
 		if _, err := tx.ExecContext(ctx, updateAdministrationRoleSQL, change.Role, change.ChangedAt.UTC(), change.IdentityID); err != nil {
 			return fmt.Errorf("update identity role: %w", err)
 		}
+		if change.Role != access.RoleSystemAdministrator {
+			if _, err := tx.ExecContext(ctx, revokeElevatedAuditGrantsForIdentitySQL, change.ChangedAt.UTC(), change.IdentityID, change.RequestID); err != nil {
+				return fmt.Errorf("revoke elevated audit grants after role change: %w", err)
+			}
+		}
 		if change.Role != access.RoleEmployee {
 			if _, err := tx.ExecContext(ctx, revokeResponsibleServiceAccountKeysSQL, change.ChangedAt.UTC(), change.IdentityID, change.ActorIdentityID, change.RequestID); err != nil {
 				return fmt.Errorf("revoke service keys after role change: %w", err)
