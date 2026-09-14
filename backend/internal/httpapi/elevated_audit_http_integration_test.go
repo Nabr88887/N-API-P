@@ -42,9 +42,42 @@ func TestElevatedAuditAdminRouterUsesSessionCSRFAndPostgresChain(t *testing.T) {
 	employeeCSRF := "synthetic-router-employee-csrf"
 	employeeSessionID := "85000000-0000-0000-0000-000000000071"
 	insertRouterSession(t, db, employeeSessionID, data.employeeID, employeeToken, employeeCSRF, data.issuedAt)
+	teamAdminID := "82000000-0000-0000-0000-000000000072"
+	teamAdminToken := "synthetic-router-team-admin-token"
+	teamAdminCSRF := "synthetic-router-team-admin-csrf"
+	teamAdminSessionID := "85000000-0000-0000-0000-000000000072"
+	mustHTTPExec(t, db, `INSERT INTO identities (id, email, role, status) VALUES ($1, 'router-team-admin@example.internal', 'team_administrator', 'active')`, teamAdminID)
+	insertRouterSession(t, db, teamAdminSessionID, teamAdminID, teamAdminToken, teamAdminCSRF, data.issuedAt)
 
 	router := newIntegratedPortalRouter(t, db)
 	origin := "https://portal.example.internal"
+	for _, test := range []struct {
+		name, method, path, body string
+		status                   int
+		code                     httpapi.ErrorCode
+	}{
+		{name: "anonymous issue", method: http.MethodPost, path: "/api/v1/admin/audit-access/grants", body: `{"purpose":"anonymous"}`, status: http.StatusUnauthorized, code: httpapi.CodeAuthenticationRequired},
+		{name: "anonymous query", method: http.MethodPost, path: "/api/v1/audits/query", body: `{}`, status: http.StatusUnauthorized, code: httpapi.CodeAuthenticationRequired},
+		{name: "anonymous batch", method: http.MethodPost, path: "/api/v1/audits/batch", body: `{"audit_ids":["84000000-0000-0000-0000-000000000070"]}`, status: http.StatusUnauthorized, code: httpapi.CodeAuthenticationRequired},
+		{name: "anonymous export", method: http.MethodPost, path: "/api/v1/audits/exports", body: `{}`, status: http.StatusUnauthorized, code: httpapi.CodeAuthenticationRequired},
+		{name: "anonymous revoke", method: http.MethodDelete, path: "/api/v1/admin/audit-access/grants/current", status: http.StatusUnauthorized, code: httpapi.CodeAuthenticationRequired},
+		{name: "team administrator issue", method: http.MethodPost, path: "/api/v1/admin/audit-access/grants", body: `{"purpose":"team admin"}`, status: http.StatusForbidden, code: httpapi.CodeForbidden},
+		{name: "team administrator query", method: http.MethodPost, path: "/api/v1/audits/query", body: `{}`, status: http.StatusForbidden, code: httpapi.CodeForbidden},
+		{name: "team administrator batch", method: http.MethodPost, path: "/api/v1/audits/batch", body: `{"audit_ids":["84000000-0000-0000-0000-000000000070"]}`, status: http.StatusForbidden, code: httpapi.CodeForbidden},
+		{name: "team administrator export", method: http.MethodPost, path: "/api/v1/audits/exports", body: `{}`, status: http.StatusForbidden, code: httpapi.CodeForbidden},
+		{name: "team administrator revoke", method: http.MethodDelete, path: "/api/v1/admin/audit-access/grants/current", status: http.StatusForbidden, code: httpapi.CodeForbidden},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			token, csrf := "", ""
+			if strings.HasPrefix(test.name, "team administrator") {
+				token, csrf = teamAdminToken, teamAdminCSRF
+			}
+			request := routerRequest(test.method, test.path, token, csrf, origin, test.body)
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, request)
+			assertHTTPIntegrationError(t, recorder, test.status, test.code)
+		})
+	}
 
 	missingCSRF := routerRequest(http.MethodPost, "/api/v1/admin/audit-access/grants", adminToken, "", origin, `{"purpose":"router integration"}`)
 	missingCSRFRecorder := httptest.NewRecorder()
@@ -55,6 +88,16 @@ func TestElevatedAuditAdminRouterUsesSessionCSRFAndPostgresChain(t *testing.T) {
 	missingOriginRecorder := httptest.NewRecorder()
 	router.ServeHTTP(missingOriginRecorder, missingOrigin)
 	assertHTTPIntegrationError(t, missingOriginRecorder, http.StatusForbidden, httpapi.CodeCSRFRejected)
+
+	wrongCSRF := routerRequest(http.MethodPost, "/api/v1/admin/audit-access/grants", adminToken, "wrong-csrf", origin, `{"purpose":"router integration"}`)
+	wrongCSRFRecorder := httptest.NewRecorder()
+	router.ServeHTTP(wrongCSRFRecorder, wrongCSRF)
+	assertHTTPIntegrationError(t, wrongCSRFRecorder, http.StatusForbidden, httpapi.CodeCSRFRejected)
+
+	foreignOrigin := routerRequest(http.MethodPost, "/api/v1/admin/audit-access/grants", adminToken, adminCSRF, "https://evil.example.internal", `{"purpose":"router integration"}`)
+	foreignOriginRecorder := httptest.NewRecorder()
+	router.ServeHTTP(foreignOriginRecorder, foreignOrigin)
+	assertHTTPIntegrationError(t, foreignOriginRecorder, http.StatusForbidden, httpapi.CodeCSRFRejected)
 
 	employeeRequest := routerRequest(http.MethodPost, "/api/v1/admin/audit-access/grants", employeeToken, employeeCSRF, origin, `{"purpose":"employee must fail"}`)
 	employeeRecorder := httptest.NewRecorder()
@@ -82,6 +125,25 @@ func TestElevatedAuditAdminRouterUsesSessionCSRFAndPostgresChain(t *testing.T) {
 	if strings.Contains(issueRecorder.Body.String(), "bearer") || strings.Contains(issueRecorder.Body.String(), "token") {
 		t.Fatalf("grant response appears to contain a bearer secret: %s", issueRecorder.Body.String())
 	}
+
+	batchRequest := routerRequest(http.MethodPost, "/api/v1/audits/batch", adminToken, adminCSRF, origin, `{"audit_ids":["84000000-0000-0000-0000-000000000070"],"limit":1}`)
+	batchRecorder := httptest.NewRecorder()
+	router.ServeHTTP(batchRecorder, batchRequest)
+	if batchRecorder.Code != http.StatusOK || !bytes.Contains(batchRecorder.Body.Bytes(), []byte(data.auditID)) || batchRecorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("batch route status/cache/body = (%d, %q, %s)", batchRecorder.Code, batchRecorder.Header().Get("Cache-Control"), batchRecorder.Body.String())
+	}
+
+	exportRequest := routerRequest(http.MethodPost, "/api/v1/audits/exports", adminToken, adminCSRF, origin, `{"full_text":"needle"}`)
+	exportRecorder := httptest.NewRecorder()
+	router.ServeHTTP(exportRecorder, exportRequest)
+	if exportRecorder.Code != http.StatusOK || exportRecorder.Header().Get("Content-Type") != "application/x-ndjson; charset=utf-8" || exportRecorder.Header().Get("Cache-Control") != "no-store" || !bytes.Contains(exportRecorder.Body.Bytes(), []byte(data.auditID)) || !bytes.Contains(exportRecorder.Body.Bytes(), []byte("synthetic needle")) {
+		t.Fatalf("export route status/content-type/cache/body = (%d, %q, %q, %s)", exportRecorder.Code, exportRecorder.Header().Get("Content-Type"), exportRecorder.Header().Get("Cache-Control"), exportRecorder.Body.String())
+	}
+
+	tamperedCursorRequest := routerRequest(http.MethodPost, "/api/v1/audits/query", adminToken, adminCSRF, origin, `{"cursor":"tampered","limit":1}`)
+	tamperedCursorRecorder := httptest.NewRecorder()
+	router.ServeHTTP(tamperedCursorRecorder, tamperedCursorRequest)
+	assertHTTPIntegrationError(t, tamperedCursorRecorder, http.StatusBadRequest, httpapi.CodeInvalidCursor)
 
 	queryRequest := routerRequest(http.MethodPost, "/api/v1/audits/query", adminToken, adminCSRF, origin, `{"full_text":"needle","limit":1}`)
 	queryRecorder := httptest.NewRecorder()
@@ -117,6 +179,44 @@ func TestElevatedAuditAdminRouterUsesSessionCSRFAndPostgresChain(t *testing.T) {
 	staleRecorder := httptest.NewRecorder()
 	router.ServeHTTP(staleRecorder, staleRequest)
 	assertHTTPIntegrationError(t, staleRecorder, http.StatusForbidden, httpapi.CodeGrantRevoked)
+}
+
+func TestElevatedAuditPortalRouterRejectsCrossSessionAndExpiredGrants(t *testing.T) {
+	db := migrateHTTPIntegrationSchema(t)
+	fixture, data := insertHTTPAuditFixture(t, db)
+	adminToken := "synthetic-router-expiry-admin-token"
+	adminCSRF := "synthetic-router-expiry-admin-csrf"
+	adminSessionID := "85000000-0000-0000-0000-000000000073"
+	insertRouterSession(t, db, adminSessionID, fixture.identityID, adminToken, adminCSRF, data.issuedAt)
+	otherToken := "synthetic-router-other-session-token"
+	otherCSRF := "synthetic-router-other-session-csrf"
+	otherSessionID := "85000000-0000-0000-0000-000000000074"
+	insertRouterSession(t, db, otherSessionID, fixture.identityID, otherToken, otherCSRF, data.issuedAt)
+	router := newIntegratedPortalRouter(t, db)
+	origin := "https://portal.example.internal"
+	issueRequest := routerRequest(http.MethodPost, "/api/v1/admin/audit-access/grants", adminToken, adminCSRF, origin, `{"purpose":"session binding"}`)
+	issueRecorder := httptest.NewRecorder()
+	router.ServeHTTP(issueRecorder, issueRequest)
+	if issueRecorder.Code != http.StatusCreated {
+		t.Fatalf("issue status = %d: %s", issueRecorder.Code, issueRecorder.Body.String())
+	}
+	otherRequest := routerRequest(http.MethodPost, "/api/v1/audits/query", otherToken, otherCSRF, origin, `{"limit":1}`)
+	otherRecorder := httptest.NewRecorder()
+	router.ServeHTTP(otherRecorder, otherRequest)
+	assertHTTPIntegrationError(t, otherRecorder, http.StatusForbidden, httpapi.CodeGrantExpired)
+	var grantID string
+	if err := json.Unmarshal(issueRecorder.Body.Bytes(), &struct {
+		ID *string `json:"id"`
+	}{ID: &grantID}); err != nil || grantID == "" {
+		t.Fatalf("decode issued grant id: %v", err)
+	}
+	expiredIssuedAt := time.Now().UTC().Add(-2 * time.Hour)
+	expiredAt := expiredIssuedAt.Add(time.Hour)
+	mustHTTPExec(t, db, `UPDATE elevated_audit_grants SET issued_at = $1, expires_at = $2 WHERE id = $3`, expiredIssuedAt, expiredAt, grantID)
+	expiredRequest := routerRequest(http.MethodPost, "/api/v1/audits/query", adminToken, adminCSRF, origin, `{"limit":1}`)
+	expiredRecorder := httptest.NewRecorder()
+	router.ServeHTTP(expiredRecorder, expiredRequest)
+	assertHTTPIntegrationError(t, expiredRecorder, http.StatusForbidden, httpapi.CodeGrantExpired)
 }
 
 func newIntegratedPortalRouter(t *testing.T, db *sql.DB) http.Handler {
