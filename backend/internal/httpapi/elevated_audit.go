@@ -9,6 +9,8 @@ import (
 	"n-api-p/internal/audit"
 )
 
+const elevatedAuditBatchRequestBodyLimit int64 = 64 << 10
+
 type elevatedAuditGrantRequest struct {
 	Purpose string `json:"purpose"`
 }
@@ -77,7 +79,13 @@ func NewElevatedAuditQueryHandler(service AdminElevatedAuditQueryService, batch 
 			return
 		}
 		var body elevatedAuditQueryRequest
-		if !decodeStrictJSON(writer, request, &body) {
+		decode := decodeStrictJSON
+		if batch {
+			decode = func(writer http.ResponseWriter, request *http.Request, destination any) bool {
+				return decodeStrictJSONWithLimit(writer, request, destination, elevatedAuditBatchRequestBodyLimit)
+			}
+		}
+		if !decode(writer, request, &body) {
 			return
 		}
 		query := audit.ElevatedAuditQuery{

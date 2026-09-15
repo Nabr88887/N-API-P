@@ -79,7 +79,7 @@ export interface AdminPortalClient {
   revokeElevatedAuditGrant?(): Promise<void>
   queryElevatedAudits?(query: ElevatedAuditQuery): Promise<PagedResponse<ElevatedAuditRecord>>
   batchViewElevatedAudits?(auditIDs: string[]): Promise<PagedResponse<ElevatedAuditRecord>>
-  exportElevatedAudits?(query: ElevatedAuditQuery, signal?: AbortSignal): Promise<Blob>
+  exportElevatedAudits?(query: ElevatedAuditQuery, signal?: AbortSignal): Promise<ReadableStream<Uint8Array>>
 }
 
 export function createAdminPortalClient(): AdminPortalClient {
@@ -150,10 +150,8 @@ export function createAdminPortalClient(): AdminPortalClient {
         try { code = (await response.json() as { error?: { code?: string } }).error?.code ?? code } catch { /* stable transport fallback */ }
         throw new AdminAPIError(code)
       }
-      try { return await response.blob() } catch (reason) {
-        if (signal?.aborted) throw reason
-        throw new AdminAPIError('EXPORT_INCOMPLETE')
-      }
+      if (!response.body) throw new AdminAPIError('EXPORT_INCOMPLETE')
+      return response.body
     },
   }
 }

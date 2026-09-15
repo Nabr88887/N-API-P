@@ -2,6 +2,21 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { AdminAPIError } from './admin-api'
 import type { AdminPortalClient, ElevatedAuditGrant, ElevatedAuditQuery, ElevatedAuditRecord } from './admin-api'
 
+type ElevatedAuditExportWritable = {
+  write(data: Uint8Array): Promise<void>
+  close(): Promise<void>
+  abort?(reason?: unknown): Promise<void>
+}
+
+type ElevatedAuditExportFileHandle = { createWritable(): Promise<ElevatedAuditExportWritable> }
+
+type ElevatedAuditExportFilePicker = (options: {
+  suggestedName: string
+  types: Array<{ description: string; accept: Record<string, string[]> }>
+}) => Promise<ElevatedAuditExportFileHandle>
+
+type ExportWindow = Window & { showSaveFilePicker?: ElevatedAuditExportFilePicker }
+
 export function ElevatedAuditWorkspace({ client }: { client: AdminPortalClient }) {
   const [grant, setGrant] = useState<ElevatedAuditGrant | null>(null)
   const [purpose, setPurpose] = useState('')
@@ -120,17 +135,17 @@ export function ElevatedAuditWorkspace({ client }: { client: AdminPortalClient }
     const controller = new AbortController()
     const generation = accessGeneration.current
     exportController.current = controller
+    let writable: ElevatedAuditExportWritable | null = null
     setExporting(true); setMessage('')
     try {
-      const blob = await client.exportElevatedAudits(query, controller.signal)
+      writable = await openElevatedAuditExportWriter()
+      const stream = await client.exportElevatedAudits(query, controller.signal)
+      await writeElevatedAuditExport(stream, writable, controller.signal)
+      writable = null
       if (generation !== accessGeneration.current || controller.signal.aborted || Date.parse(grant.expires_at) <= Date.now()) return
-      const url = URL.createObjectURL(blob)
-      try {
-        const link = document.createElement('a')
-        link.href = url; link.download = 'audit-export.jsonl'; link.click()
-      } finally { URL.revokeObjectURL(url) }
       setMessage('Export complete.')
     } catch (reason) {
+      if (writable) await abortElevatedAuditExportWriter(writable, reason)
       if (generation !== accessGeneration.current) return
       if (controller.signal.aborted || (reason instanceof Error && reason.name === 'AbortError')) setMessage('Export cancelled.')
       else handleFailure(reason)
@@ -159,4 +174,41 @@ export function ElevatedAuditWorkspace({ client }: { client: AdminPortalClient }
 }
 
 function isGrantError(reason: unknown): boolean { const code = reason instanceof AdminAPIError ? reason.code : ''; return ['GRANT_EXPIRED', 'GRANT_REVOKED', 'FORBIDDEN', 'AUTHENTICATION_REQUIRED'].includes(code) }
-function errorMessage(reason: unknown): string { if (isGrantError(reason)) return 'Audit grant expired or was revoked.'; if (reason instanceof AdminAPIError && reason.code === 'EXPORT_INCOMPLETE') return 'Export incomplete.'; return 'Unable to complete elevated audit operation.' }
+function errorMessage(reason: unknown): string { if (isGrantError(reason)) return 'Audit grant expired or was revoked.'; if (reason instanceof AdminAPIError && reason.code === 'EXPORT_INCOMPLETE') return 'Export incomplete.'; if (reason instanceof AdminAPIError && reason.code === 'EXPORT_STREAMING_UNSUPPORTED') return 'This browser cannot stream exports directly to a file.'; return 'Unable to complete elevated audit operation.' }
+
+async function openElevatedAuditExportWriter(): Promise<ElevatedAuditExportWritable> {
+  const picker = (window as ExportWindow).showSaveFilePicker
+  if (!picker) throw new AdminAPIError('EXPORT_STREAMING_UNSUPPORTED')
+  const handle = await picker({ suggestedName: 'audit-export.jsonl', types: [{ description: 'JSONL audit export', accept: { 'application/x-ndjson': ['.jsonl'] } }] })
+  return handle.createWritable()
+}
+
+async function writeElevatedAuditExport(stream: ReadableStream<Uint8Array>, writable: ElevatedAuditExportWritable, signal: AbortSignal): Promise<void> {
+  const reader = stream.getReader()
+  try {
+    for (;;) {
+      if (signal.aborted) throw signal.reason ?? new DOMException('The export was cancelled.', 'AbortError')
+      const { done, value } = await reader.read()
+      if (done) {
+        await writable.close()
+        return
+      }
+      if (!value) throw new AdminAPIError('EXPORT_INCOMPLETE')
+      await writable.write(value)
+    }
+  } catch (reason) {
+    await reader.cancel(reason).catch(() => {})
+    await abortElevatedAuditExportWriter(writable, reason)
+    throw reason
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+async function abortElevatedAuditExportWriter(writable: ElevatedAuditExportWritable, reason: unknown): Promise<void> {
+  try {
+    await writable.abort?.(reason)
+  } catch {
+    return
+  }
+}

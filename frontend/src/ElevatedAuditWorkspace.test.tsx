@@ -12,7 +12,7 @@ function client(overrides: Partial<AdminPortalClient> = {}): AdminPortalClient {
     revokeElevatedAuditGrant: vi.fn().mockResolvedValue(undefined),
     queryElevatedAudits: vi.fn().mockResolvedValue({ data: [{ id: 'audit-1', request_id: 'req-1', owner_kind: 'personal', identity_id: 'employee-1', team_id: 'team-1', model_id: 'model-1', request_capture_status: 'complete', response_capture_status: 'complete', outcome: 'success', created_at: '2026-09-11T09:00:00Z', updated_at: '2026-09-11T09:00:00Z', request: { prompt: 'synthetic' }, response: { answer: 'synthetic' } }], pagination: { has_more: false } }),
     batchViewElevatedAudits: vi.fn().mockResolvedValue({ data: [], pagination: { has_more: false } }),
-    exportElevatedAudits: vi.fn().mockResolvedValue(new Blob(['{"id":"audit-1"}\n'], { type: 'application/x-ndjson' })),
+    exportElevatedAudits: vi.fn().mockResolvedValue(new Response('{"id":"audit-1"}\n').body!),
     ...overrides,
   } as AdminPortalClient
 }
@@ -34,21 +34,29 @@ describe('ElevatedAuditWorkspace', () => {
       batchViewElevatedAudits: vi.fn().mockImplementation(() => new Promise((resolve) => { finishBatch = resolve })),
       exportElevatedAudits: vi.fn().mockImplementation((_query, receivedSignal) => { signal = receivedSignal; return new Promise(() => {}) }),
     })
+    const picker = vi.fn().mockResolvedValue({ createWritable: vi.fn().mockResolvedValue({ write: vi.fn(), close: vi.fn(), abort: vi.fn() }) })
+    const previousPicker = (window as Window & { showSaveFilePicker?: unknown }).showSaveFilePicker
+    Object.defineProperty(window, 'showSaveFilePicker', { configurable: true, value: picker })
     const storage = vi.spyOn(Storage.prototype, 'setItem')
-    render(<ElevatedAuditWorkspace client={admin} />)
-    await activateGrant()
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Search retained audits' })) })
-    fireEvent.click(screen.getByLabelText('Select audit audit-1'))
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Export JSONL' })) })
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'View selected audits' })) })
-    await act(async () => { await vi.advanceTimersByTimeAsync(60_001) })
-    expect(signal?.aborted).toBe(true)
-    expect(screen.queryByText('audit-1')).not.toBeInTheDocument()
-    vi.mocked(admin.issueElevatedAuditGrant!).mockResolvedValue({ id: 'grant-2', status: 'active', issued_at: new Date().toISOString(), expires_at: new Date(Date.now() + 60_000).toISOString() })
-    await activateGrant()
-    await act(async () => { finishBatch({ data: [syntheticRecord('stale-audit')], pagination: { has_more: false } }) })
-    expect(screen.queryByText('stale-audit')).not.toBeInTheDocument()
-    expect(storage).not.toHaveBeenCalled()
+    try {
+      render(<ElevatedAuditWorkspace client={admin} />)
+      await activateGrant()
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Search retained audits' })) })
+      fireEvent.click(screen.getByLabelText('Select audit audit-1'))
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Export JSONL' })) })
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'View selected audits' })) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_001) })
+      expect(signal?.aborted).toBe(true)
+      expect(screen.queryByText('audit-1')).not.toBeInTheDocument()
+      vi.mocked(admin.issueElevatedAuditGrant!).mockResolvedValue({ id: 'grant-2', status: 'active', issued_at: new Date().toISOString(), expires_at: new Date(Date.now() + 60_000).toISOString() })
+      await activateGrant()
+      await act(async () => { finishBatch({ data: [syntheticRecord('stale-audit')], pagination: { has_more: false } }) })
+      expect(screen.queryByText('stale-audit')).not.toBeInTheDocument()
+      expect(storage).not.toHaveBeenCalled()
+    } finally {
+      if (previousPicker === undefined) delete (window as Window & { showSaveFilePicker?: unknown }).showSaveFilePicker
+      else Object.defineProperty(window, 'showSaveFilePicker', { configurable: true, value: previousPicker })
+    }
   })
 
   it('keeps only the active page and continues the submitted query after filter edits', async () => {
@@ -107,13 +115,47 @@ describe('ElevatedAuditWorkspace', () => {
   it('reports export cancellation and grant expiry without storing output', async () => {
     const abort = vi.fn()
     const admin = client({ exportElevatedAudits: vi.fn().mockRejectedValue(Object.assign(new Error('cancelled'), { name: 'AbortError' })) })
+    const picker = vi.fn().mockResolvedValue({ createWritable: vi.fn().mockResolvedValue({ write: vi.fn(), close: vi.fn(), abort }) })
+    const previousPicker = (window as Window & { showSaveFilePicker?: unknown }).showSaveFilePicker
+    Object.defineProperty(window, 'showSaveFilePicker', { configurable: true, value: picker })
     render(<ElevatedAuditWorkspace client={admin} />)
-    fireEvent.change(screen.getByLabelText('Grant purpose'), { target: { value: 'Synthetic export' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Activate 24-hour audit access' }))
-    await waitFor(() => expect(screen.getByText(/Grant active/)).toBeInTheDocument())
-    fireEvent.click(screen.getByRole('button', { name: 'Export JSONL' }))
-    await waitFor(() => expect(screen.getByText('Export cancelled.')).toBeInTheDocument())
-    expect(abort).not.toHaveBeenCalled()
+    try {
+      fireEvent.change(screen.getByLabelText('Grant purpose'), { target: { value: 'Synthetic export' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Activate 24-hour audit access' }))
+      await waitFor(() => expect(screen.getByText(/Grant active/)).toBeInTheDocument())
+      fireEvent.click(screen.getByRole('button', { name: 'Export JSONL' }))
+      await waitFor(() => expect(screen.getByText('Export cancelled.')).toBeInTheDocument())
+      expect(abort).toHaveBeenCalledOnce()
+    } finally {
+      if (previousPicker === undefined) delete (window as Window & { showSaveFilePicker?: unknown }).showSaveFilePicker
+      else Object.defineProperty(window, 'showSaveFilePicker', { configurable: true, value: previousPicker })
+    }
+  })
+
+  it('writes export chunks through the browser file stream', async () => {
+    const chunks: Uint8Array[] = []
+    const write = vi.fn(async (chunk: Uint8Array) => { chunks.push(chunk) })
+    const close = vi.fn(async () => {})
+    const abort = vi.fn(async () => {})
+    const picker = vi.fn().mockResolvedValue({ createWritable: vi.fn().mockResolvedValue({ write, close, abort }) })
+    const previousPicker = (window as Window & { showSaveFilePicker?: unknown }).showSaveFilePicker
+    Object.defineProperty(window, 'showSaveFilePicker', { configurable: true, value: picker })
+    const admin = client({ exportElevatedAudits: vi.fn().mockResolvedValue(new Response('synthetic-export\n').body) })
+
+    try {
+      render(<ElevatedAuditWorkspace client={admin} />)
+      await activateGrant()
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Export JSONL' })) })
+      await waitFor(() => expect(screen.getByText('Export complete.')).toBeInTheDocument())
+      expect(picker).toHaveBeenCalledWith(expect.objectContaining({ suggestedName: 'audit-export.jsonl' }))
+      expect(write).toHaveBeenCalledOnce()
+      expect(close).toHaveBeenCalledOnce()
+      expect(abort).not.toHaveBeenCalled()
+      expect(new TextDecoder().decode(chunks[0])).toBe('synthetic-export\n')
+    } finally {
+      if (previousPicker === undefined) delete (window as Window & { showSaveFilePicker?: unknown }).showSaveFilePicker
+      else Object.defineProperty(window, 'showSaveFilePicker', { configurable: true, value: previousPicker })
+    }
   })
 })
 

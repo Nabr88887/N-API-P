@@ -115,3 +115,12 @@ the candidate UUID snapshot remains after audit metadata is purged, so case rows
 never prevent independent raw-content expiry or metadata cleanup. The down
 migration is for disposable schemas only; deployed rollback disables the routes
 and uses a forward repair or a separately confirmed recovery point.
+
+## 000009 Elevated Audit Access
+
+Migration `000009_elevated_audit_access` adds session-bound, revocable elevated
+audit grants and the grant/query metadata columns used by content-free security
+events. The grant table is metadata-only and does not contain raw request or
+response content. The down migration is for disposable schemas only; deployed
+rollback disables the routes and uses a forward repair or a separately
+confirmed recovery point.

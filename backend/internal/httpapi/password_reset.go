@@ -115,7 +115,11 @@ func NewPasswordResetCompletionHandler(service PasswordResetCompleter) http.Hand
 }
 
 func decodeStrictJSON(writer http.ResponseWriter, request *http.Request, destination any) bool {
-	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8<<10))
+	return decodeStrictJSONWithLimit(writer, request, destination, 8<<10)
+}
+
+func decodeStrictJSONWithLimit(writer http.ResponseWriter, request *http.Request, destination any, limit int64) bool {
+	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, limit))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil {
 		writeErrorResponse(writer, CodeInvalidRequest)

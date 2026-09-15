@@ -142,9 +142,17 @@ describe('admin portal client', () => {
   })
 
   it('reports a broken export response body as incomplete rather than returning a download', async () => {
-    const response = new Response('synthetic', { headers: { 'Content-Type': 'application/x-ndjson' } })
-    vi.spyOn(response, 'blob').mockRejectedValue(new TypeError('synthetic interrupted stream'))
+    const response = new Response(null, { headers: { 'Content-Type': 'application/x-ndjson' } })
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(response)
     await expect(createAdminPortalClient().exportElevatedAudits!({ limit: 1 })).rejects.toMatchObject({ code: 'EXPORT_INCOMPLETE' })
+  })
+
+  it('returns the export response stream without buffering it as a Blob', async () => {
+    const response = new Response('synthetic', { headers: { 'Content-Type': 'application/x-ndjson' } })
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(response)
+
+    const stream = await createAdminPortalClient().exportElevatedAudits!({ limit: 1 })
+
+    expect(stream).toBe(response.body)
   })
 })

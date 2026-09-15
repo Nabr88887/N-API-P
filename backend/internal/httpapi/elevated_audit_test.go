@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,6 +50,20 @@ func TestElevatedAuditHandlersMapGrantStateAndBatchValidation(t *testing.T) {
 	batch := httptest.NewRecorder()
 	withEmployeeSession(NewElevatedAuditQueryHandler(&fakeElevatedAuditQueryService{}, true), access.ActivePortalSession{IdentityID: "admin-1", Role: access.RoleSystemAdministrator}).ServeHTTP(batch, httptest.NewRequest(http.MethodPost, "/api/v1/audits/batch", bytes.NewBufferString(`{"limit":1}`)))
 	assertHTTPError(t, batch, http.StatusBadRequest, CodeInvalidQuery)
+}
+
+func TestElevatedAuditBatchHandlerAcceptsMaximumBatchPayload(t *testing.T) {
+	const auditID = "84000000-0000-0000-0000-000000000070"
+	auditIDs := strings.TrimSuffix(strings.Repeat(`"`+auditID+`",`, audit.MaxElevatedAuditBatchIDs), ",")
+	requestBody := `{"audit_ids":[` + auditIDs + `],"limit":1000}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/audits/batch", strings.NewReader(requestBody))
+
+	withEmployeeSession(NewElevatedAuditQueryHandler(&fakeElevatedAuditQueryService{}, true), access.ActivePortalSession{IdentityID: "admin-1", Role: access.RoleSystemAdministrator}).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("maximum batch payload returned status %d, body %q", recorder.Code, recorder.Body.String())
+	}
 }
 
 func TestElevatedAuditExportHandlerMapsPreStreamErrors(t *testing.T) {
