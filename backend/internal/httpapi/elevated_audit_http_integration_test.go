@@ -119,7 +119,7 @@ func TestElevatedAuditAdminRouterUsesSessionCSRFAndPostgresChain(t *testing.T) {
 	if err := json.Unmarshal(issueRecorder.Body.Bytes(), &grantResponse); err != nil {
 		t.Fatalf("decode grant response: %v", err)
 	}
-	if grantResponse.ID == "" || grantResponse.Status != "active" || !grantResponse.ExpiresAt.After(grantResponse.IssuedAt) {
+	if grantResponse.ID == "" || grantResponse.Status != "active" || !grantResponse.ExpiresAt.After(grantResponse.IssuedAt) || grantResponse.ExpiresAt.Sub(grantResponse.IssuedAt) > 24*time.Hour {
 		t.Fatalf("grant response = %+v", grantResponse)
 	}
 	if strings.Contains(issueRecorder.Body.String(), "bearer") || strings.Contains(issueRecorder.Body.String(), "token") {
@@ -133,11 +133,74 @@ func TestElevatedAuditAdminRouterUsesSessionCSRFAndPostgresChain(t *testing.T) {
 		t.Fatalf("batch route status/cache/body = (%d, %q, %s)", batchRecorder.Code, batchRecorder.Header().Get("Cache-Control"), batchRecorder.Body.String())
 	}
 
-	exportRequest := routerRequest(http.MethodPost, "/api/v1/audits/exports", adminToken, adminCSRF, origin, `{"full_text":"needle"}`)
+	exportRequest := routerRequest(http.MethodPost, "/api/v1/audits/exports", adminToken, adminCSRF, origin, `{"full_text":"needle","limit":1}`)
 	exportRecorder := httptest.NewRecorder()
 	router.ServeHTTP(exportRecorder, exportRequest)
 	if exportRecorder.Code != http.StatusOK || exportRecorder.Header().Get("Content-Type") != "application/x-ndjson; charset=utf-8" || exportRecorder.Header().Get("Cache-Control") != "no-store" || !bytes.Contains(exportRecorder.Body.Bytes(), []byte(data.auditID)) || !bytes.Contains(exportRecorder.Body.Bytes(), []byte("synthetic needle")) {
 		t.Fatalf("export route status/content-type/cache/body = (%d, %q, %q, %s)", exportRecorder.Code, exportRecorder.Header().Get("Content-Type"), exportRecorder.Header().Get("Cache-Control"), exportRecorder.Body.String())
+	}
+
+	firstPageRequest := routerRequest(http.MethodPost, "/api/v1/audits/query", adminToken, adminCSRF, origin, `{"limit":1}`)
+	firstPageRecorder := httptest.NewRecorder()
+	router.ServeHTTP(firstPageRecorder, firstPageRequest)
+	var firstPage struct {
+		Data []struct {
+			ID         string `json:"id"`
+			IdentityID string `json:"identity_id"`
+		} `json:"data"`
+		Pagination struct {
+			NextCursor string `json:"next_cursor"`
+			HasMore    bool   `json:"has_more"`
+		} `json:"pagination"`
+	}
+	if firstPageRecorder.Code != http.StatusOK || json.Unmarshal(firstPageRecorder.Body.Bytes(), &firstPage) != nil || len(firstPage.Data) != 1 || firstPage.Data[0].ID != data.auditID || firstPage.Data[0].IdentityID != data.employeeID || !firstPage.Pagination.HasMore || firstPage.Pagination.NextCursor == "" {
+		t.Fatalf("first cursor page = status %d body %s parsed %+v", firstPageRecorder.Code, firstPageRecorder.Body.String(), firstPage)
+	}
+	cursorBody, err := json.Marshal(struct {
+		Cursor string `json:"cursor"`
+		Limit  int    `json:"limit"`
+	}{Cursor: firstPage.Pagination.NextCursor, Limit: 1})
+	if err != nil {
+		t.Fatalf("encode cursor continuation request: %v", err)
+	}
+	secondPageRequest := routerRequest(http.MethodPost, "/api/v1/audits/query", adminToken, adminCSRF, origin, string(cursorBody))
+	secondPageRecorder := httptest.NewRecorder()
+	router.ServeHTTP(secondPageRecorder, secondPageRequest)
+	var secondPage struct {
+		Data []struct {
+			ID         string `json:"id"`
+			IdentityID string `json:"identity_id"`
+		} `json:"data"`
+	}
+	if secondPageRecorder.Code != http.StatusOK || json.Unmarshal(secondPageRecorder.Body.Bytes(), &secondPage) != nil || len(secondPage.Data) != 1 || secondPage.Data[0].ID != data.secondAuditID || secondPage.Data[0].IdentityID != data.secondEmployeeID {
+		t.Fatalf("second cursor page = status %d body %s parsed %+v", secondPageRecorder.Code, secondPageRecorder.Body.String(), secondPage)
+	}
+
+	employeeFilterRequest := routerRequest(http.MethodPost, "/api/v1/audits/query", adminToken, adminCSRF, origin, `{"identity_id":"`+data.secondEmployeeID+`","limit":1}`)
+	employeeFilterRecorder := httptest.NewRecorder()
+	router.ServeHTTP(employeeFilterRecorder, employeeFilterRequest)
+	var employeeFilterPage struct {
+		Data []struct {
+			ID         string `json:"id"`
+			IdentityID string `json:"identity_id"`
+		} `json:"data"`
+	}
+	if employeeFilterRecorder.Code != http.StatusOK || json.Unmarshal(employeeFilterRecorder.Body.Bytes(), &employeeFilterPage) != nil || len(employeeFilterPage.Data) != 1 || employeeFilterPage.Data[0].ID != data.secondAuditID || employeeFilterPage.Data[0].IdentityID != data.secondEmployeeID {
+		t.Fatalf("employee filter page = status %d body %s parsed %+v", employeeFilterRecorder.Code, employeeFilterRecorder.Body.String(), employeeFilterPage)
+	}
+
+	serviceFilterRequest := routerRequest(http.MethodPost, "/api/v1/audits/query", adminToken, adminCSRF, origin, `{"service_account_id":"`+data.serviceAccountID+`","responsible_identity_id":"`+data.secondEmployeeID+`","limit":1}`)
+	serviceFilterRecorder := httptest.NewRecorder()
+	router.ServeHTTP(serviceFilterRecorder, serviceFilterRequest)
+	var serviceFilterPage struct {
+		Data []struct {
+			ID                    string `json:"id"`
+			ServiceAccountID      string `json:"service_account_id"`
+			ResponsibleIdentityID string `json:"responsible_identity_id"`
+		} `json:"data"`
+	}
+	if serviceFilterRecorder.Code != http.StatusOK || json.Unmarshal(serviceFilterRecorder.Body.Bytes(), &serviceFilterPage) != nil || len(serviceFilterPage.Data) != 1 || serviceFilterPage.Data[0].ID != data.serviceAuditID || serviceFilterPage.Data[0].ServiceAccountID != data.serviceAccountID || serviceFilterPage.Data[0].ResponsibleIdentityID != data.secondEmployeeID {
+		t.Fatalf("service-account filter page = status %d body %s parsed %+v", serviceFilterRecorder.Code, serviceFilterRecorder.Body.String(), serviceFilterPage)
 	}
 
 	tamperedCursorRequest := routerRequest(http.MethodPost, "/api/v1/audits/query", adminToken, adminCSRF, origin, `{"cursor":"tampered","limit":1}`)
@@ -340,11 +403,19 @@ type httpAuditFixture struct {
 }
 
 type httpAuditData struct {
-	employeeID string
-	keyID      string
-	auditID    string
-	requestID  string
-	issuedAt   time.Time
+	employeeID       string
+	secondEmployeeID string
+	keyID            string
+	secondKeyID      string
+	serviceAccountID string
+	serviceKeyID     string
+	auditID          string
+	requestID        string
+	secondAuditID    string
+	secondRequestID  string
+	serviceAuditID   string
+	serviceRequestID string
+	issuedAt         time.Time
 }
 
 func migrateHTTPIntegrationSchema(t *testing.T) *sql.DB {
@@ -435,19 +506,36 @@ func insertHTTPAuditFixture(t *testing.T, db *sql.DB) (httpAuditFixture, httpAud
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	fixture := httpAuditFixture{teamID: "81000000-0000-0000-0000-000000000070", identityID: "82000000-0000-0000-0000-000000000070"}
 	data := httpAuditData{
-		employeeID: "82000000-0000-0000-0000-000000000071",
-		keyID:      "83000000-0000-0000-0000-000000000070",
-		auditID:    "84000000-0000-0000-0000-000000000070",
-		requestID:  "87000000-0000-0000-0000-000000000070",
-		issuedAt:   now,
+		employeeID:       "82000000-0000-0000-0000-000000000071",
+		secondEmployeeID: "82000000-0000-0000-0000-000000000073",
+		keyID:            "83000000-0000-0000-0000-000000000070",
+		secondKeyID:      "83000000-0000-0000-0000-000000000071",
+		serviceAccountID: "88000000-0000-0000-0000-000000000070",
+		serviceKeyID:     "83000000-0000-0000-0000-000000000072",
+		auditID:          "84000000-0000-0000-0000-000000000070",
+		requestID:        "87000000-0000-0000-0000-000000000070",
+		secondAuditID:    "84000000-0000-0000-0000-000000000071",
+		secondRequestID:  "87000000-0000-0000-0000-000000000071",
+		serviceAuditID:   "84000000-0000-0000-0000-000000000072",
+		serviceRequestID: "87000000-0000-0000-0000-000000000072",
+		issuedAt:         now,
 	}
 	mustHTTPExec(t, db, `INSERT INTO teams (id, name, status) VALUES ($1, $2, 'active')`, fixture.teamID, "HTTP audit")
-	mustHTTPExec(t, db, `INSERT INTO identities (id, email, role, status) VALUES ($1, 'router-admin@example.internal', 'system_administrator', 'active'), ($2, 'router-employee@example.internal', 'employee', 'active')`, fixture.identityID, data.employeeID)
-	mustHTTPExec(t, db, `INSERT INTO memberships (identity_id, team_id) VALUES ($1, $2)`, data.employeeID, fixture.teamID)
+	mustHTTPExec(t, db, `INSERT INTO identities (id, email, role, status) VALUES ($1, 'router-admin@example.internal', 'system_administrator', 'active'), ($2, 'router-employee@example.internal', 'employee', 'active'), ($3, 'router-second-employee@example.internal', 'employee', 'active')`, fixture.identityID, data.employeeID, data.secondEmployeeID)
+	mustHTTPExec(t, db, `INSERT INTO memberships (identity_id, team_id) VALUES ($1, $2), ($3, $2)`, data.employeeID, fixture.teamID, data.secondEmployeeID)
 	mustHTTPExec(t, db, `INSERT INTO api_keys (id, identity_id, kind, name, prefix, verification_hash, status, created_at) VALUES ($1, $2, 'personal', 'router-key', 'nap_router', $3, 'active', $4)`, data.keyID, data.employeeID, []byte("router-key-hash"), now)
+	mustHTTPExec(t, db, `INSERT INTO api_keys (id, identity_id, kind, name, prefix, verification_hash, status, created_at) VALUES ($1, $2, 'personal', 'router-second-key', 'nap_router2', $3, 'active', $4)`, data.secondKeyID, data.secondEmployeeID, []byte("router-second-key-hash"), now)
+	mustHTTPExec(t, db, `INSERT INTO service_accounts (id, team_id, responsible_identity_id, name, status, created_at, updated_at) VALUES ($1, $2, $3, 'router-service', 'active', $4, $4)`, data.serviceAccountID, fixture.teamID, data.secondEmployeeID, now)
+	mustHTTPExec(t, db, `INSERT INTO api_keys (id, service_account_id, kind, name, prefix, verification_hash, status, created_at) VALUES ($1, $2, 'service', 'router-service-key', 'nap_router3', $3, 'active', $4)`, data.serviceKeyID, data.serviceAccountID, []byte("router-service-key-hash"), now)
 	mustHTTPExec(t, db, `INSERT INTO model_allowlist (model_id, status, updated_by_identity_id) VALUES ('gpt-router', 'allowed', $1)`, fixture.identityID)
 	mustHTTPExec(t, db, `INSERT INTO audit_records (id, request_id, key_id, owner_kind, identity_id, team_id, model_id, capture_status, outcome, observed_request_bytes, observed_response_bytes, created_at, updated_at, completed_at) VALUES ($1, $2, $3, 'personal', $4, $5, 'gpt-router', 'complete', 'success', 128, 64, $6, $6, $6)`, data.auditID, data.requestID, data.keyID, data.employeeID, fixture.teamID, now)
 	mustHTTPExec(t, db, `INSERT INTO usage_records (id, audit_id, request_id, key_id, owner_kind, identity_id, team_id, model_id, outcome, usage_reported, input_tokens, output_tokens, total_tokens, created_at) VALUES ('85000000-0000-0000-0000-000000000070', $1, $2, $3, 'personal', $4, $5, 'gpt-router', 'success', true, 3, 2, 5, $6)`, data.auditID, data.requestID, data.keyID, data.employeeID, fixture.teamID, now)
+	secondCreatedAt := now.Add(-time.Second)
+	mustHTTPExec(t, db, `INSERT INTO audit_records (id, request_id, key_id, owner_kind, identity_id, team_id, model_id, capture_status, outcome, observed_request_bytes, observed_response_bytes, created_at, updated_at, completed_at) VALUES ($1, $2, $3, 'personal', $4, $5, 'gpt-router-second', 'complete', 'success', 128, 64, $6, $6, $6)`, data.secondAuditID, data.secondRequestID, data.secondKeyID, data.secondEmployeeID, fixture.teamID, secondCreatedAt)
+	mustHTTPExec(t, db, `INSERT INTO usage_records (id, audit_id, request_id, key_id, owner_kind, identity_id, team_id, model_id, outcome, usage_reported, input_tokens, output_tokens, total_tokens, created_at) VALUES ('85000000-0000-0000-0000-000000000071', $1, $2, $3, 'personal', $4, $5, 'gpt-router-second', 'success', true, 6, 4, 10, $6)`, data.secondAuditID, data.secondRequestID, data.secondKeyID, data.secondEmployeeID, fixture.teamID, secondCreatedAt)
+	serviceCreatedAt := now.Add(-2 * time.Second)
+	mustHTTPExec(t, db, `INSERT INTO audit_records (id, request_id, key_id, owner_kind, service_account_id, responsible_identity_id, team_id, model_id, capture_status, outcome, observed_request_bytes, observed_response_bytes, created_at, updated_at, completed_at) VALUES ($1, $2, $3, 'service', $4, $5, $6, 'gpt-router-service', 'complete', 'success', 128, 64, $7, $7, $7)`, data.serviceAuditID, data.serviceRequestID, data.serviceKeyID, data.serviceAccountID, data.secondEmployeeID, fixture.teamID, serviceCreatedAt)
+	mustHTTPExec(t, db, `INSERT INTO usage_records (id, audit_id, request_id, key_id, owner_kind, service_account_id, responsible_identity_id, team_id, model_id, outcome, usage_reported, input_tokens, output_tokens, total_tokens, created_at) VALUES ('85000000-0000-0000-0000-000000000072', $1, $2, $3, 'service', $4, $5, $6, 'gpt-router-service', 'success', true, 8, 5, 13, $7)`, data.serviceAuditID, data.serviceRequestID, data.serviceKeyID, data.serviceAccountID, data.secondEmployeeID, fixture.teamID, serviceCreatedAt)
 
 	envelope, err := audit.NewEnvelopeService(1, map[int][]byte{1: bytes.Repeat([]byte{0x41}, 32)})
 	if err != nil {
@@ -466,6 +554,32 @@ func insertHTTPAuditFixture(t *testing.T, db *sql.DB) (httpAuditFixture, httpAud
 	}
 	insertHTTPRawContent(t, db, data.auditID, "request", requestContent, now)
 	insertHTTPRawContent(t, db, data.auditID, "response", responseContent, now)
+	secondRequestContext := audit.EncryptionContext{AuditID: data.secondAuditID, ContentKind: audit.ContentKindRequest, OwnerKind: audit.OwnerKindPersonal, IdentityID: data.secondEmployeeID, TeamID: fixture.teamID, CreatedAt: secondCreatedAt}
+	secondResponseContext := secondRequestContext
+	secondResponseContext.ContentKind = audit.ContentKindResponse
+	secondRequestContent, err := envelope.Encrypt([]byte(`{"messages":[{"content":"synthetic second record"}]}`), secondRequestContext)
+	if err != nil {
+		t.Fatalf("encrypt second request fixture: %v", err)
+	}
+	secondResponseContent, err := envelope.Encrypt([]byte(`{"response":"synthetic second answer"}`), secondResponseContext)
+	if err != nil {
+		t.Fatalf("encrypt second response fixture: %v", err)
+	}
+	insertHTTPRawContent(t, db, data.secondAuditID, "request", secondRequestContent, secondCreatedAt)
+	insertHTTPRawContent(t, db, data.secondAuditID, "response", secondResponseContent, secondCreatedAt)
+	serviceRequestContext := audit.EncryptionContext{AuditID: data.serviceAuditID, ContentKind: audit.ContentKindRequest, OwnerKind: audit.OwnerKindService, ServiceAccountID: data.serviceAccountID, ResponsibleIdentityID: data.secondEmployeeID, TeamID: fixture.teamID, CreatedAt: serviceCreatedAt}
+	serviceResponseContext := serviceRequestContext
+	serviceResponseContext.ContentKind = audit.ContentKindResponse
+	serviceRequestContent, err := envelope.Encrypt([]byte(`{"messages":[{"content":"synthetic service record"}]}`), serviceRequestContext)
+	if err != nil {
+		t.Fatalf("encrypt service request fixture: %v", err)
+	}
+	serviceResponseContent, err := envelope.Encrypt([]byte(`{"response":"synthetic service answer"}`), serviceResponseContext)
+	if err != nil {
+		t.Fatalf("encrypt service response fixture: %v", err)
+	}
+	insertHTTPRawContent(t, db, data.serviceAuditID, "request", serviceRequestContent, serviceCreatedAt)
+	insertHTTPRawContent(t, db, data.serviceAuditID, "response", serviceResponseContent, serviceCreatedAt)
 	return fixture, data
 }
 

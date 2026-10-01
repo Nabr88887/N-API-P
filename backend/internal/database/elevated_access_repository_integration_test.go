@@ -45,6 +45,36 @@ func TestElevatedAuditGrantRepositoryBindsAndInvalidatesAcrossSessionLifecycle(t
 	}
 }
 
+func TestElevatedAuditGrantRepositoryRejectsDisabledIdentityAndCompromisedSession(t *testing.T) {
+	db, _ := migrateRepositorySchema(t)
+	fixture := insertAuditPolicyFixture(t, db)
+	now := fixture.now.Add(time.Minute)
+	repository := NewRepository(db)
+
+	disabledSessionID := "85000000-0000-0000-0000-000000000052"
+	insertElevatedAuditSession(t, db, fixture.identityID, disabledSessionID, now)
+	disabledGrant := elevatedAuditTestGrant("85000000-0000-0000-0000-000000000053", fixture.identityID, disabledSessionID, now, "disabled identity")
+	if err := repository.CreateElevatedAuditGrant(context.Background(), disabledGrant, elevatedAuditIssuedEvent(disabledGrant, "86000000-0000-0000-0000-000000000053", "87000000-0000-0000-0000-000000000053")); err != nil {
+		t.Fatalf("CreateElevatedAuditGrant() disabled identity fixture error = %v", err)
+	}
+	mustExec(t, db, `UPDATE identities SET status = 'disabled', disabled_at = $1 WHERE id = $2`, now, fixture.identityID)
+	if _, err := repository.FindElevatedAuditGrant(context.Background(), audit.ElevatedAuditGrantLookup{ActorIdentityID: fixture.identityID, SessionID: disabledSessionID, At: now}); !errors.Is(err, audit.ErrElevatedAuditGrantNotFound) {
+		t.Fatalf("FindElevatedAuditGrant() for disabled identity error = %v, want ErrElevatedAuditGrantNotFound", err)
+	}
+	mustExec(t, db, `UPDATE identities SET status = 'active', disabled_at = NULL WHERE id = $1`, fixture.identityID)
+
+	compromisedSessionID := "85000000-0000-0000-0000-000000000054"
+	insertElevatedAuditSession(t, db, fixture.identityID, compromisedSessionID, now)
+	compromisedGrant := elevatedAuditTestGrant("85000000-0000-0000-0000-000000000055", fixture.identityID, compromisedSessionID, now, "compromise response")
+	if err := repository.CreateElevatedAuditGrant(context.Background(), compromisedGrant, elevatedAuditIssuedEvent(compromisedGrant, "86000000-0000-0000-0000-000000000055", "87000000-0000-0000-0000-000000000055")); err != nil {
+		t.Fatalf("CreateElevatedAuditGrant() compromised session fixture error = %v", err)
+	}
+	mustExec(t, db, `UPDATE sessions SET revoked_at = $1, reauthenticated_until = NULL WHERE id = $2`, now.Add(time.Minute), compromisedSessionID)
+	if _, err := repository.FindElevatedAuditGrant(context.Background(), audit.ElevatedAuditGrantLookup{ActorIdentityID: fixture.identityID, SessionID: compromisedSessionID, At: now.Add(time.Minute)}); !errors.Is(err, audit.ErrElevatedAuditGrantNotFound) {
+		t.Fatalf("FindElevatedAuditGrant() for compromised session error = %v, want ErrElevatedAuditGrantNotFound", err)
+	}
+}
+
 func TestElevatedAuditGrantRepositoryInvalidatesOnLogoutAndRestoreSessionRevocation(t *testing.T) {
 	db, _ := migrateRepositorySchema(t)
 	fixture := insertAuditPolicyFixture(t, db)
