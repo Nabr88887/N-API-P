@@ -36,5 +36,22 @@ __pycache__/
 *.test
 *.tsbuildinfo
 
+# Locally built backend binaries are not source artifacts
+backend/n-api-p
+
 # Optional local multi-agent coordination is never product source
 .agent-board/
+
+# Local governance, agent settings, and workspace-only instructions
+AGENTS.md
+.codex/
+.claude/
+.agents/
+
+# Internal planning and deployment records kept locally, never for public Git
+docs/reports/
+openspec/
+deploy/BACKUP-RESTORE.md
+deploy/PILOT-APPROVAL-PACKAGE.md
+deploy/PILOT-ROLLBACK-CHECKLIST.md
+deploy/RUNBOOK.md

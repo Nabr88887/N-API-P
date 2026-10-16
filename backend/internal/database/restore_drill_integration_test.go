@@ -30,23 +30,25 @@ import (
 var task105MigrationFiles embed.FS
 
 const (
-	task105AdminID       = "95000000-0000-0000-0000-000000000001"
-	task105EmployeeID    = "95000000-0000-0000-0000-000000000002"
-	task105TeamID        = "95000000-0000-0000-0000-000000000003"
-	task105ServiceID     = "95000000-0000-0000-0000-000000000004"
-	task105PersonalKeyID = "95000000-0000-0000-0000-000000000005"
-	task105ServiceKeyID  = "95000000-0000-0000-0000-000000000006"
-	task105SessionID     = "95000000-0000-0000-0000-000000000007"
-	task105ActivationID  = "95000000-0000-0000-0000-000000000008"
-	task105AuditID       = "95000000-0000-0000-0000-000000000009"
-	task105RequestID     = "95000000-0000-0000-0000-000000000010"
-	task105UsageID       = "95000000-0000-0000-0000-000000000011"
-	task105EventID       = "95000000-0000-0000-0000-000000000012"
-	task105CaseID        = "95000000-0000-0000-0000-000000000013"
-	task105GrantID       = "95000000-0000-0000-0000-000000000014"
-	task105RawMarker     = "synthetic-raw-content-must-not-restore"
-	task105SessionToken  = "synthetic-task105-session-token"
-	task105CSRFToken     = "synthetic-task105-csrf-token"
+	task105AdminID         = "95000000-0000-0000-0000-000000000001"
+	task105EmployeeID      = "95000000-0000-0000-0000-000000000002"
+	task105TeamID          = "95000000-0000-0000-0000-000000000003"
+	task105ServiceID       = "95000000-0000-0000-0000-000000000004"
+	task105PersonalKeyID   = "95000000-0000-0000-0000-000000000005"
+	task105ServiceKeyID    = "95000000-0000-0000-0000-000000000006"
+	task105SessionID       = "95000000-0000-0000-0000-000000000007"
+	task105ActivationID    = "95000000-0000-0000-0000-000000000008"
+	task105AuditID         = "95000000-0000-0000-0000-000000000009"
+	task105RequestID       = "95000000-0000-0000-0000-000000000010"
+	task105UsageID         = "95000000-0000-0000-0000-000000000011"
+	task105EventID         = "95000000-0000-0000-0000-000000000012"
+	task105CaseID          = "95000000-0000-0000-0000-000000000013"
+	task105GrantID         = "95000000-0000-0000-0000-000000000014"
+	task105AdminSessionID  = "95000000-0000-0000-0000-000000000015"
+	task105ElevatedGrantID = "95000000-0000-0000-0000-000000000016"
+	task105RawMarker       = "synthetic-raw-content-must-not-restore"
+	task105SessionToken    = "synthetic-task105-session-token"
+	task105CSRFToken       = "synthetic-task105-csrf-token"
 )
 
 func TestTask105PrepareSource(t *testing.T) {
@@ -65,6 +67,8 @@ func TestTask105PrepareSource(t *testing.T) {
 	task105Exec(t, db, `INSERT INTO api_keys (id, identity_id, kind, name, prefix, verification_hash, status, created_at) VALUES ($1, $2, 'personal', 'task105-personal', $3, $4, 'active', $5)`, task105PersonalKeyID, task105EmployeeID, personal[:12], task105Hash(personal), now)
 	task105Exec(t, db, `INSERT INTO api_keys (id, service_account_id, kind, name, prefix, verification_hash, status, created_at) VALUES ($1, $2, 'service', 'task105-service-key', $3, $4, 'active', $5)`, task105ServiceKeyID, task105ServiceID, service[:12], task105Hash(service), now)
 	task105Exec(t, db, `INSERT INTO sessions (id, identity_id, token_hash, csrf_token_hash, created_at, last_seen_at, idle_expires_at, absolute_expires_at, reauthenticated_until) VALUES ($1, $2, $3, $4, $5::timestamptz, $5::timestamptz, $5::timestamptz + interval '2 hours', $5::timestamptz + interval '12 hours', $5::timestamptz + interval '2 hours')`, task105SessionID, task105EmployeeID, task105Hash(task105SessionToken), task105Hash(task105CSRFToken), now)
+	task105Exec(t, db, `INSERT INTO sessions (id, identity_id, token_hash, csrf_token_hash, created_at, last_seen_at, idle_expires_at, absolute_expires_at, reauthenticated_until) VALUES ($1, $2, $3, $4, $5::timestamptz, $5::timestamptz, $5::timestamptz + interval '2 hours', $5::timestamptz + interval '12 hours', $5::timestamptz + interval '2 hours')`, task105AdminSessionID, task105AdminID, task105Hash("synthetic-task105-admin-session"), task105Hash("synthetic-task105-admin-csrf"), now)
+	task105Exec(t, db, `INSERT INTO elevated_audit_grants (id, actor_identity_id, session_id, purpose, issued_at, expires_at) VALUES ($1, $2, $3, 'synthetic recovery grant', $4, $4::timestamptz + interval '2 hours')`, task105ElevatedGrantID, task105AdminID, task105AdminSessionID, now)
 	task105Exec(t, db, `INSERT INTO one_time_codes (id, identity_id, email, purpose, code_hash, expires_at, created_at, issued_by_identity_id) VALUES ($1, $2, 'task105-employee@example.internal', 'activation', decode('7461736b3130352d636f64652d68617368', 'hex'), $3::timestamptz + interval '1 hour', $3::timestamptz, $4)`, task105ActivationID, task105EmployeeID, now, task105AdminID)
 	task105Exec(t, db, `INSERT INTO model_allowlist (model_id, status, updated_by_identity_id, created_at, updated_at) VALUES ('task105-model', 'allowed', $1, $2, $2)`, task105AdminID, now)
 	task105Exec(t, db, `UPDATE operational_state SET audit_gate_state = 'open', audit_gate_reason_code = NULL, gate_changed_at = $1, last_persistence_probe_at = $1, updated_at = $1 WHERE id = 1`, now)
@@ -86,14 +90,15 @@ func TestTask105VerifyRestoredBeforeInvalidation(t *testing.T) {
 	task105AssertMigrationVersion(t, db)
 	for table, want := range map[string]int{
 		"identities": 2, "teams": 1, "memberships": 2, "service_accounts": 1,
-		"sessions": 1, "one_time_codes": 1, "api_keys": 2, "model_allowlist": 1,
+		"sessions": 2, "one_time_codes": 1, "api_keys": 2, "model_allowlist": 1,
 		"audit_records": 1, "usage_records": 1, "security_events": 1,
-		"investigation_cases": 1, "investigation_case_audits": 1, "investigation_access_grants": 1,
+		"investigation_cases": 1, "investigation_case_audits": 1, "investigation_access_grants": 1, "elevated_audit_grants": 1,
 		"operational_state": 1, "audit_raw_content": 0,
 	} {
 		task105AssertCount(t, db, table, want)
 	}
 	task105AssertInvestigationMetadata(t, db)
+	task105AssertElevatedGrant(t, db, false)
 
 	repository := database.NewRepository(db)
 	session, err := access.NewSessionService(repository).Authenticate(context.Background(), task105SessionToken, task105CSRFToken, true)
@@ -153,6 +158,7 @@ func TestTask105InvalidateRestoredCredentials(t *testing.T) {
 		`UPDATE one_time_codes SET used_at = COALESCE(used_at, CURRENT_TIMESTAMP), revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP) WHERE used_at IS NULL AND revoked_at IS NULL`,
 		`UPDATE api_keys SET status = 'revoked', revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP), verification_hash = NULL`,
 		`UPDATE investigation_access_grants SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP) WHERE revoked_at IS NULL`,
+		`UPDATE elevated_audit_grants SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP) WHERE revoked_at IS NULL`,
 		`UPDATE operational_state SET audit_gate_state = 'blocked', audit_gate_reason_code = 'restore_requires_probe', gate_changed_at = CURRENT_TIMESTAMP, last_persistence_probe_at = NULL, last_cleanup_at = NULL, deletion_overdue_since = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = 1`,
 	} {
 		if _, err := tx.Exec(statement); err != nil {
@@ -190,12 +196,20 @@ func TestTask105VerifyRestored(t *testing.T) {
 		t.Fatalf("restore safety counts raw=%d sessions=%d keys=%d codes=%d", rawRows, activeSessions, activeKeys, usableCodes)
 	}
 	task105AssertInvestigationMetadata(t, db)
+	task105AssertElevatedGrant(t, db, true)
 	var activeInvestigationGrants int
 	if err := db.QueryRow(`SELECT count(*) FROM investigation_access_grants WHERE revoked_at IS NULL`).Scan(&activeInvestigationGrants); err != nil {
 		t.Fatal(err)
 	}
 	if activeInvestigationGrants != 0 {
 		t.Fatalf("active restored investigation grants = %d, want 0", activeInvestigationGrants)
+	}
+	var activeElevatedGrants int
+	if err := db.QueryRow(`SELECT count(*) FROM elevated_audit_grants WHERE revoked_at IS NULL`).Scan(&activeElevatedGrants); err != nil {
+		t.Fatal(err)
+	}
+	if activeElevatedGrants != 0 {
+		t.Fatalf("active restored elevated grants = %d, want 0", activeElevatedGrants)
 	}
 	var state, reason string
 	if err := db.QueryRow(`SELECT audit_gate_state, audit_gate_reason_code FROM operational_state WHERE id = 1`).Scan(&state, &reason); err != nil {
@@ -324,6 +338,7 @@ func task105AssertMigrationVersion(t *testing.T, db *sql.DB) {
 		"000006_metadata_retention.up.sql",
 		"000007_metadata_retention_hardening.up.sql",
 		"000008_governed_investigations.up.sql",
+		"000009_elevated_audit_access.up.sql",
 	}
 	if strings.Join(migrations, "\n") != strings.Join(wantMigrations, "\n") {
 		t.Fatalf("migration inventory = %v, want %v", migrations, wantMigrations)
@@ -351,7 +366,7 @@ func task105AssertMigrationVersion(t *testing.T, db *sql.DB) {
 		"api_keys", "audit_raw_content", "audit_records", "identities", "memberships",
 		"model_allowlist", "one_time_codes", "operational_state", "security_events",
 		"service_accounts", "sessions", "teams", "usage_records", "investigation_cases",
-		"investigation_case_audits", "investigation_access_grants",
+		"investigation_case_audits", "investigation_access_grants", "elevated_audit_grants",
 	}
 	sort.Strings(wantTables)
 	if strings.Join(tables, "\n") != strings.Join(wantTables, "\n") {
@@ -499,6 +514,19 @@ func task105AssertInvestigationMetadata(t *testing.T, db *sql.DB) {
 		actorID != task105EmployeeID || sessionID != task105SessionID {
 		t.Fatalf("restored investigation metadata = (%s, %s, %s, %d, %s, %s, %s), want seeded v8 metadata",
 			subjectID, creatorID, auditID, ordinal, captureStatus, actorID, sessionID)
+	}
+}
+
+func task105AssertElevatedGrant(t *testing.T, db *sql.DB, revoked bool) {
+	t.Helper()
+	var actorID, sessionID, purpose string
+	var issuedAt, expiresAt time.Time
+	var revokedAt sql.NullTime
+	if err := db.QueryRow(`SELECT actor_identity_id, session_id, purpose, issued_at, expires_at, revoked_at FROM elevated_audit_grants WHERE id = $1`, task105ElevatedGrantID).Scan(&actorID, &sessionID, &purpose, &issuedAt, &expiresAt, &revokedAt); err != nil {
+		t.Fatal(err)
+	}
+	if actorID != task105AdminID || sessionID != task105AdminSessionID || purpose != "synthetic recovery grant" || !expiresAt.After(issuedAt) || (!revoked && !expiresAt.After(time.Now())) || revokedAt.Valid != revoked {
+		t.Fatalf("restored elevated grant metadata or revocation is incorrect")
 	}
 }
 

@@ -1,5 +1,7 @@
 import AxeBuilder from '@axe-core/playwright'
 import { expect, test, type Page, type TestInfo } from '@playwright/test'
+import { createHash } from 'node:crypto'
+import { readFile, writeFile } from 'node:fs/promises'
 
 type Role = 'employee' | 'team_administrator' | 'system_administrator'
 
@@ -136,6 +138,113 @@ test('team administrator member and usage views remain accessible', async ({ pag
   await navigate(page, 'Team usage')
   await expect(page.getByRole('table', { name: 'Team usage records' })).toBeVisible()
   await capture(page, testInfo, 'team-usage')
+})
+
+test('system administrator creates the first team and invites an employee', async ({ page, browser }, testInfo) => {
+  const failedRequests: string[] = []
+  const isolatedScripts: string[] = []
+  page.on('requestfailed', (request) => failedRequests.push(new URL(request.url()).pathname))
+  await page.route('**/*', async (route) => {
+    const url = new URL(route.request().url())
+    if (url.origin === 'http://127.0.0.1:4173') await route.continue()
+    else if (url.hostname === 'gc.kis.v2.scr.kaspersky-labs.com' && route.request().resourceType() === 'script') {
+      // Isolate the host antivirus injection without making an external request.
+      isolatedScripts.push(`${url.origin}${url.pathname}`)
+      await route.fulfill({ contentType: 'application/javascript', body: '' })
+    } else await route.abort()
+  })
+  await page.addInitScript(() => {
+    let cls = 0
+    if (PerformanceObserver.supportedEntryTypes.includes('layout-shift')) {
+      new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          const shift = entry as PerformanceEntry & { hadRecentInput: boolean; value: number }
+          if (!shift.hadRecentInput) cls += shift.value
+        }
+        document.documentElement.dataset.testCls = String(cls)
+      }).observe({ type: 'layout-shift', buffered: true })
+      document.addEventListener('DOMContentLoaded', () => { document.documentElement.dataset.testCls ??= '0' })
+    }
+  })
+  const response = await page.goto('/e2e/harness.html?role=system_administrator&teams=empty&fault=team_create_once')
+  expect(response?.status()).toBe(200)
+  await navigate(page, 'People & teams')
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await expect(page.getByRole('table', { name: 'Teams' })).toContainText('No teams yet.')
+  await expect(page.getByRole('button', { name: 'Invite employee' })).toBeDisabled()
+  await capture(page, testInfo, 'system-empty-teams')
+
+  const createButton = page.getByRole('button', { name: 'Create team', exact: true })
+  await createButton.click()
+  const dialog = page.getByRole('dialog', { name: 'Create team' })
+  await expect(dialog).toBeFocused()
+  const name = dialog.getByRole('textbox', { name: 'Team name' })
+  const submit = dialog.getByRole('button', { name: 'Create team', exact: true })
+  await expect(submit).toBeDisabled()
+  await page.keyboard.press('Tab')
+  await expect(name).toBeFocused()
+  expect(await name.evaluate((element) => element.matches(':focus-visible'))).toBe(true)
+  await name.fill('   ')
+  await expect(submit).toBeDisabled()
+  await name.fill('  Internal Test  ')
+  await capture(page, testInfo, 'system-create-team-dialog')
+  await page.keyboard.press('Shift+Tab')
+  await expect(submit).toBeFocused()
+  await page.keyboard.press('Tab')
+  await expect(name).toBeFocused()
+  await page.keyboard.press('Escape')
+  await expect(dialog).not.toBeVisible()
+  await expect(createButton).toBeFocused()
+
+  await createButton.click()
+  await expect(name).toHaveValue('')
+  await name.fill('  Internal Test  ')
+  await submit.click()
+  await expect(dialog.getByRole('alert')).toHaveText('Unable to create this team.')
+  await expect(name).toHaveValue('  Internal Test  ')
+  await capture(page, testInfo, 'system-create-team-error')
+  await submit.click()
+  await expect(dialog).not.toBeVisible()
+  await expect(createButton).toBeFocused()
+  await expect(page.getByRole('table', { name: 'Teams' }).getByRole('row', { name: /Internal Test active 0/ })).toBeVisible()
+  await capture(page, testInfo, 'system-created-team')
+
+  await page.getByRole('button', { name: 'Invite employee' }).click()
+  const invite = page.getByRole('dialog', { name: 'Invite employee' })
+  await expect(invite.getByLabel('Assigned team')).toHaveValue('team-created-1')
+  await expect(invite.getByLabel('Assigned team')).toContainText('Internal Test')
+  await invite.getByLabel('Company email').fill('new@example.internal')
+  await invite.getByRole('button', { name: 'Create invitation' }).click()
+  await expect(page.getByRole('dialog', { name: 'New invitation' })).toContainText('synthetic-activation-code')
+  await page.getByRole('button', { name: 'I have saved this value' }).click()
+  await assertLayout(page)
+  await assertAccessible(page)
+  expect(failedRequests).toEqual([])
+
+  const dimensions = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    scrollHeight: document.documentElement.scrollHeight,
+    viewportWidth: window.innerWidth,
+    cls: document.documentElement.dataset.testCls ?? 'unsupported',
+    reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+  }))
+  expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.viewportWidth)
+  expect(dimensions.reducedMotion).toBe(true)
+  const sourceFiles = ['src/SystemAdminWorkspace.tsx', 'src/admin-api.ts', 'src/ModalDialog.tsx', 'src/App.tsx', 'src/App.css', 'src/test/playwright-harness.tsx', 'e2e/harness.html', 'e2e/administration.spec.ts']
+  const sourceHashes = Object.fromEntries(await Promise.all(sourceFiles.map(async (file) => [file, createHash('sha256').update(await readFile(file)).digest('hex')])))
+  const receiptPath = testInfo.outputPath('team-creation-receipt.json')
+  await writeFile(receiptPath, JSON.stringify({
+      status: 'PASS', sourceHashes, adapter: 'Playwright', browserVersion: browser.version(), viewport: page.viewportSize(),
+      command: 'npm run e2e -- --grep "creates the first team" --workers=1',
+      checks: ['empty state', 'blank name', 'trimmed name', 'error and retry', 'focus visible', 'focus trap and restore', 'invitation', 'axe', 'overflow', 'reduced motion', 'console and requests'],
+      dimensions, failedRequests, isolatedScripts, browserErrors: browserErrors.get(page),
+      skipped: ['real backend and database (synthetic client)', 'pending state (covered by component test)', 'existing mobile navigation focus with reduced motion: separately reproduced failure; reduced motion enabled after navigation'],
+      screenshots: testInfo.attachments.filter((attachment) => attachment.contentType === 'image/png').map((attachment) => attachment.path),
+    }, null, 2))
+  await testInfo.attach('team-creation-receipt', {
+    path: receiptPath,
+    contentType: 'application/json',
+  })
 })
 
 test('system administrator sensitive workflows preserve permissions and focus', async ({ page }, testInfo) => {

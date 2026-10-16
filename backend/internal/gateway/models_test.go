@@ -13,7 +13,7 @@ import (
 func TestModelListHandlerFiltersValidatedUpstreamModels(t *testing.T) {
 	upstream := &fakeModelUpstream{response: &NewAPIResponse{
 		StatusCode: http.StatusOK, ContentType: "application/json", RequestID: "upstream-models",
-		Body: io.NopCloser(strings.NewReader(`{"success":true,"object":"list","data":[{"id":"gpt-allowed","object":"model","created":1,"owned_by":"internal"},{"id":"gpt-blocked","object":"model","created":2,"owned_by":"internal"}]}`)),
+		Body: io.NopCloser(strings.NewReader(`{"success":true,"object":"list","data":[{"id":"gpt-allowed","object":"model","created":1,"owned_by":"internal","supported_endpoint_types":["openai","anthropic"]},{"id":"gpt-blocked","object":"model","created":2,"owned_by":"internal","supported_endpoint_types":["openai"]}]}`)),
 	}}
 	handler, err := NewModelListHandler(upstream, &fakeModelFilter{allowed: []string{"gpt-allowed"}})
 	if err != nil {
@@ -36,7 +36,7 @@ func TestModelListHandlerRejectsInvalidUpstreamData(t *testing.T) {
 		"wrong envelope":  `{"object":"models","data":[]}`,
 		"failed envelope": `{"success":false,"object":"list","data":[]}`,
 		"unknown field":   `{"success":true,"object":"list","data":[],"unexpected":true}`,
-		"duplicate id":    `{"object":"list","data":[{"id":"gpt-a","object":"model","owned_by":"internal"},{"id":"gpt-a","object":"model","owned_by":"internal"}]}`,
+		"duplicate id":    `{"object":"list","data":[{"id":"gpt-a","object":"model","created":1,"owned_by":"internal","supported_endpoint_types":["openai"]},{"id":"gpt-a","object":"model","created":1,"owned_by":"internal","supported_endpoint_types":[]}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			handler, err := NewModelListHandler(&fakeModelUpstream{response: &NewAPIResponse{

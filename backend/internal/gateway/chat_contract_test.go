@@ -280,6 +280,46 @@ func TestDecodeModelListResponseAcceptsCompatibleEnvelope(t *testing.T) {
 	}
 }
 
+func TestDecodeModelListResponseAcceptsNewAPIEndpointMetadata(t *testing.T) {
+	for name, metadata := range map[string]string{
+		"endpoint types": `["openai","anthropic"]`,
+		"empty":          `[]`,
+		"null":           `null`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := `{"success":true,"object":"list","data":[{"id":"gpt-allowed","object":"model","created":1,"owned_by":"internal","supported_endpoint_types":` + metadata + `}]}`
+			response, err := DecodeModelListResponse([]byte(body))
+			if err != nil {
+				t.Fatalf("DecodeModelListResponse() error = %v", err)
+			}
+			want := Model{ID: "gpt-allowed", Object: "model", Created: 1, OwnedBy: "internal"}
+			if response.Object != "list" || len(response.Data) != 1 || response.Data[0] != want {
+				t.Fatalf("model list = %+v, want canonical model %+v", response, want)
+			}
+		})
+	}
+}
+
+func TestDecodeModelListResponseRejectsInvalidNewAPIEndpointMetadata(t *testing.T) {
+	for name, metadata := range map[string]string{
+		"scalar":        `"openai"`,
+		"object":        `{}`,
+		"number":        `[1]`,
+		"null entry":    `[null]`,
+		"blank entry":   `[""]`,
+		"padded entry":  `[" openai"]`,
+		"control entry": `["openai\n"]`,
+		"nested array":  `[["openai"]]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := `{"object":"list","data":[{"id":"gpt-allowed","object":"model","created":1,"owned_by":"internal","supported_endpoint_types":` + metadata + `}]}`
+			if _, err := DecodeModelListResponse([]byte(body)); !errors.Is(err, ErrInvalidModelListResponse) {
+				t.Fatalf("error = %v, want ErrInvalidModelListResponse", err)
+			}
+		})
+	}
+}
+
 func TestDecodeModelListResponseRejectsMalformedEnvelope(t *testing.T) {
 	for _, body := range []string{
 		`{"object":"list","data":{}}`,
@@ -288,6 +328,8 @@ func TestDecodeModelListResponseRejectsMalformedEnvelope(t *testing.T) {
 		`{"object":"list","data":[{"id":"gpt-4o","object":"model","owned_by":"openai"}]}`,
 		`{"object":"list","data":[{"id":"gpt-4o","object":"model","created":"now","owned_by":"openai"}]}`,
 		`{"object":"list","data":[{"id":"gpt\n4o","object":"model","created":1700000000,"owned_by":"openai"}]}`,
+		`{"object":"list","data":[{"id":"gpt-4o","object":"model","created":1,"owned_by":"openai","unexpected":true}]}`,
+		`{"object":"list","data":[{"id":"gpt-4o","object":"model","created":1,"owned_by":"openai","supported_endpoint_types":[],"supported_endpoint_types":["openai"]}]}`,
 	} {
 		if _, err := DecodeModelListResponse([]byte(body)); !errors.Is(err, ErrInvalidModelListResponse) {
 			t.Fatalf("DecodeModelListResponse(%s) error = %v, want ErrInvalidModelListResponse", body, err)

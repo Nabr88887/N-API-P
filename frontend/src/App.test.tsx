@@ -6,7 +6,7 @@ import { cleanup } from '@testing-library/react'
 import { App } from './App'
 import type { EmployeePortalClient, KeyIssuance } from './employee-api'
 import type { TeamPortalClient } from './team-api'
-import type { AdminPortalClient, HealthResponse } from './admin-api'
+import type { AdminPortalClient, HealthResponse, Team } from './admin-api'
 
 afterEach(() => {
   cleanup()
@@ -266,6 +266,81 @@ describe('App', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Unable to load more members.')
     await user.click(screen.getByRole('button', { name: 'Load more members' }))
     expect(await screen.findByText('second@example.internal')).toBeInTheDocument()
+  })
+
+  it('creates the first team and makes it available for an employee invitation', async () => {
+    const user = userEvent.setup()
+    const client = adminClient()
+    client.listTeams = vi.fn().mockResolvedValue({ data: [], pagination: { has_more: false } })
+    render(<App role="system_administrator" adminClient={client} />)
+    await user.click(screen.getByRole('link', { name: 'People & teams' }))
+    await screen.findByRole('table', { name: 'Teams' })
+    expect(screen.getByRole('button', { name: 'Invite employee' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'Create team' }))
+    const dialog = screen.getByRole('dialog', { name: 'Create team' })
+    await user.type(within(dialog).getByLabelText('Team name'), '  Internal Test  ')
+    await user.click(within(dialog).getByRole('button', { name: 'Create team' }))
+
+    expect(client.createTeam).toHaveBeenCalledWith('Internal Test')
+    expect(screen.queryByRole('dialog', { name: 'Create team' })).not.toBeInTheDocument()
+    expect(within(screen.getByRole('table', { name: 'Teams' })).getByRole('row', { name: /Internal Test active 0/ })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Invite employee' }))
+    expect(screen.getByLabelText('Assigned team')).toHaveValue('team-new')
+    expect(screen.getByLabelText('Assigned team')).toHaveTextContent('Internal Test')
+    await user.type(screen.getByLabelText('Company email'), 'new@example.internal')
+    await user.click(screen.getByRole('button', { name: 'Create invitation' }))
+    expect(client.invite).toHaveBeenCalledWith('new@example.internal', 'team-new')
+  })
+
+  it('keeps team creation errors in the dialog and preserves the name for retry', async () => {
+    const user = userEvent.setup()
+    const client = adminClient()
+    vi.mocked(client.createTeam).mockRejectedValueOnce(new Error('private database details'))
+    render(<App role="system_administrator" adminClient={client} />)
+    await user.click(screen.getByRole('link', { name: 'People & teams' }))
+    await user.click(await screen.findByRole('button', { name: 'Create team' }))
+    const dialog = screen.getByRole('dialog', { name: 'Create team' })
+    await user.type(within(dialog).getByLabelText('Team name'), 'Internal Test')
+    await user.click(within(dialog).getByRole('button', { name: 'Create team' }))
+
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('Unable to create this team.')
+    expect(within(dialog).getByLabelText('Team name')).toHaveValue('Internal Test')
+    expect(screen.queryByText('private database details')).not.toBeInTheDocument()
+    expect(screen.getByRole('table', { name: 'Teams' })).toHaveTextContent('Platform')
+    await user.click(within(dialog).getByRole('button', { name: 'Create team' }))
+    expect(screen.getByRole('table', { name: 'Teams' })).toHaveTextContent('Internal Test')
+    expect(screen.getByRole('table', { name: 'Teams' })).toHaveTextContent('Platform')
+    await user.click(screen.getByRole('button', { name: 'Create team' }))
+    expect(screen.getByLabelText('Team name')).toHaveValue('')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('rejects blank team names and prevents duplicate creation while pending', async () => {
+    const user = userEvent.setup()
+    const client = adminClient()
+    let complete!: (team: Team) => void
+    client.createTeam = vi.fn().mockReturnValue(new Promise<Team>((resolve) => { complete = resolve }))
+    render(<App role="system_administrator" adminClient={client} />)
+    await user.click(screen.getByRole('link', { name: 'People & teams' }))
+    await user.click(await screen.findByRole('button', { name: 'Create team' }))
+    const dialog = screen.getByRole('dialog', { name: 'Create team' })
+    const name = within(dialog).getByLabelText('Team name')
+    const submit = within(dialog).getByRole('button', { name: 'Create team' })
+    expect(submit).toBeDisabled()
+    await user.type(name, '   ')
+    await user.keyboard('{Enter}')
+    expect(client.createTeam).not.toHaveBeenCalled()
+    await user.clear(name)
+    await user.type(name, 'Internal Test')
+    await user.dblClick(submit)
+    expect(client.createTeam).toHaveBeenCalledTimes(1)
+    expect(submit).toBeDisabled()
+    expect(name).toBeDisabled()
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled()
+    await user.keyboard('{Escape}')
+    expect(dialog).toBeInTheDocument()
+    await act(async () => complete({ id: 'team-new', name: 'Internal Test', status: 'active', member_count: 0, created_at: '2026-10-09T01:00:00Z' }))
+    expect(screen.queryByRole('dialog', { name: 'Create team' })).not.toBeInTheDocument()
   })
 
   it('invites an employee and reveals the activation value once', async () => {
@@ -667,6 +742,7 @@ function adminClient(): AdminPortalClient {
   return {
 	listAccounts: vi.fn().mockResolvedValue({ data: [{ id: 'employee-1', email: 'member@example.internal', role: 'employee', status: 'active', team_ids: ['team-1'], created_at: '2026-08-11T01:00:00Z' }], pagination: { has_more: false } }),
 	listTeams: vi.fn().mockResolvedValue({ data: [{ id: 'team-1', name: 'Platform', status: 'active', member_count: 1, created_at: '2026-08-11T01:00:00Z' }], pagination: { has_more: false } }),
+	createTeam: vi.fn().mockResolvedValue({ id: 'team-new', name: 'Internal Test', status: 'active', member_count: 0, created_at: '2026-10-09T01:00:00Z' }),
 	disableTeam: vi.fn().mockResolvedValue(undefined),
 	invite: vi.fn().mockResolvedValue({ invitation: { account_id: 'employee-2', email: 'new@example.internal', team_id: 'team-1', status: 'pending', expires_at: '2026-08-12T12:00:00Z', created_at: '2026-08-11T12:00:00Z' }, activation_code: 'activation-once' }),
 	updateAccount: vi.fn().mockResolvedValue(undefined), addMember: vi.fn().mockResolvedValue(undefined), removeMember: vi.fn().mockResolvedValue(undefined),

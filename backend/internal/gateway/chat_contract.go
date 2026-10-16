@@ -397,10 +397,11 @@ func DecodeModelListResponse(data []byte) (ModelListResponse, error) {
 		Object  string `json:"object"`
 		Success *bool  `json:"success,omitempty"`
 		Data    []struct {
-			ID      string `json:"id"`
-			Object  string `json:"object"`
-			Created *int64 `json:"created"`
-			OwnedBy string `json:"owned_by"`
+			ID                     string   `json:"id"`
+			Object                 string   `json:"object"`
+			Created                *int64   `json:"created"`
+			OwnedBy                string   `json:"owned_by"`
+			SupportedEndpointTypes []string `json:"supported_endpoint_types,omitempty"`
 		} `json:"data"`
 	}
 	if err := decodeJSON(data, &wire, true); err != nil || wire.Object != "list" || wire.Data == nil || wire.Success != nil && !*wire.Success {
@@ -411,6 +412,12 @@ func DecodeModelListResponse(data []byte) (ModelListResponse, error) {
 	for _, model := range wire.Data {
 		if !validContractText(model.ID, true) || model.Object != "model" || model.Created == nil || *model.Created < 0 || !validContractText(model.OwnedBy, true) {
 			return ModelListResponse{}, ErrInvalidModelListResponse
+		}
+		// NewAPI endpoint metadata is validated but never grants gateway capabilities.
+		for _, endpointType := range model.SupportedEndpointTypes {
+			if !validContractText(endpointType, true) {
+				return ModelListResponse{}, ErrInvalidModelListResponse
+			}
 		}
 		response.Data = append(response.Data, Model{
 			ID:      model.ID,

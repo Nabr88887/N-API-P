@@ -43,7 +43,9 @@ RUN case "$VERSION" in ""|latest|*placeholder*|*[!A-Za-z0-9._-]*) exit 1 ;; esac
     CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
     go build -trimpath -ldflags="-s -w" -o /out/n-api-p-healthcheck ./cmd/n-api-p-healthcheck && \
     CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
-    go build -trimpath -ldflags="-s -w" -o /out/n-api-p-migrate ./cmd/n-api-p-migrate
+    go build -trimpath -ldflags="-s -w" -o /out/n-api-p-migrate ./cmd/n-api-p-migrate && \
+    CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
+    go build -trimpath -ldflags="-s -w" -o /out/n-api-p-bootstrap ./cmd/n-api-p-bootstrap
 
 FROM scratch
 
@@ -58,6 +60,7 @@ COPY --from=go-build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certif
 COPY --from=go-build /out/n-api-p /n-api-p
 COPY --from=go-build /out/n-api-p-healthcheck /n-api-p-healthcheck
 COPY --from=go-build /out/n-api-p-migrate /n-api-p-migrate
+COPY --from=go-build /out/n-api-p-bootstrap /n-api-p-bootstrap
 
 # The startup contract reads root-owned 0400 secret mounts directly. Runtime
 # configuration must add the hardening controls documented in deploy/RUNBOOK.md.

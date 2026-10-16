@@ -46,6 +46,7 @@ export class AdminAPIError extends Error {
 export interface AdminPortalClient {
   listAccounts(query?: { cursor?: string; status?: AccountStatus; role?: Role }): Promise<PagedResponse<Account>>
   listTeams(query?: { cursor?: string; status?: TeamStatus }): Promise<PagedResponse<Team>>
+  createTeam(name: string): Promise<Team>
   disableTeam(teamID: string): Promise<void>
   invite(email: string, teamID: string): Promise<InvitationIssuance>
   updateAccount(accountID: string, input: { email?: string; role?: Role; status?: AccountStatus; confirmed?: boolean }): Promise<void>
@@ -106,6 +107,7 @@ export function createAdminPortalClient(): AdminPortalClient {
   return {
     listAccounts: (query = {}) => request(pagePath('/api/v1/users', query)),
     listTeams: (query = {}) => request(pagePath('/api/v1/teams', query)),
+    createTeam: (name) => request('/api/v1/teams', { method: 'POST', body: JSON.stringify({ name }) }),
     disableTeam: (id) => request(`/api/v1/teams/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify({ confirmed: true }) }),
     invite: (email, teamID) => request('/api/v1/invitations', { method: 'POST', body: JSON.stringify({ email, team_id: teamID }) }),
     updateAccount: (id, input) => request(`/api/v1/users/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) }),

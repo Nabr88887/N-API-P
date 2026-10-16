@@ -22,6 +22,7 @@ const now = '2026-08-14T09:00:00Z'
 const roleParam = new URLSearchParams(window.location.search).get('role')
 const role: Role = roleParam === 'employee' || roleParam === 'team_administrator' ? roleParam : 'system_administrator'
 const fault = new URLSearchParams(window.location.search).get('fault')
+const emptyTeams = new URLSearchParams(window.location.search).get('teams') === 'empty'
 
 const personalKey: PersonalKey = {
   id: 'personal-key-1',
@@ -74,8 +75,10 @@ function teamClient(): TeamPortalClient {
 
 function adminClient(): AdminPortalClient {
   let reauthenticated = false
+  let failTeamCreate = fault === 'team_create_once'
   const account: Account = { id: 'employee-1', email: 'employee@company.internal', role: 'employee', status: 'active', team_ids: ['team-1'], created_at: now }
   const team: Team = { id: 'team-1', name: 'Platform', status: 'active', member_count: 1, created_at: now }
+  const teams: Team[] = emptyTeams ? [] : [team]
   const service: ServiceAccount = { id: 'service-1', team_id: team.id, responsible_account_id: account.id, name: 'ci-agent', status: 'active', created_at: now }
   const key: Key = { id: 'service-key-1', kind: 'service', service_account_id: service.id, team_id: team.id, name: 'deploy', prefix: 'nap_87654321', status: 'active', created_at: now }
   const serviceKeys = Array.from({ length: 50 }, (_, index) => ({
@@ -94,7 +97,16 @@ function adminClient(): AdminPortalClient {
   const rawView: RawAuditView = { audit_id: audit.id, request: { messages: [{ role: 'user', content: 'synthetic request text' }] }, response: { choices: [{ message: { content: 'synthetic response text' } }] } }
   return {
     listAccounts: async () => page([account]),
-    listTeams: async () => page([team]),
+    listTeams: async () => page([...teams]),
+    createTeam: async (name) => {
+      if (failTeamCreate) {
+        failTeamCreate = false
+        throw new Error('synthetic team creation failure')
+      }
+      const created: Team = { id: `team-created-${teams.length + 1}`, name, status: 'active', member_count: 0, created_at: now }
+      teams.push(created)
+      return created
+    },
     disableTeam: async () => undefined,
     invite: async (email, teamID) => ({ invitation: { account_id: 'employee-2', email, team_id: teamID, status: 'pending', expires_at: now, created_at: now }, activation_code: 'synthetic-activation-code' }),
     updateAccount: async () => undefined,

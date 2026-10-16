@@ -60,7 +60,7 @@ describe('audit workspace', () => {
 
 function auditClient(): AdminPortalClient {
   return {
-    listAccounts: vi.fn(), listTeams: vi.fn(), disableTeam: vi.fn(), invite: vi.fn(), updateAccount: vi.fn(), addMember: vi.fn(), removeMember: vi.fn(),
+    listAccounts: vi.fn(), listTeams: vi.fn(), createTeam: vi.fn(), disableTeam: vi.fn(), invite: vi.fn(), updateAccount: vi.fn(), addMember: vi.fn(), removeMember: vi.fn(),
     listServiceAccounts: vi.fn(), createServiceAccount: vi.fn(), disableServiceAccount: vi.fn(), listServiceKeys: vi.fn(), createServiceKey: vi.fn(), rotateServiceKey: vi.fn(), revokeServiceKey: vi.fn(),
     getModelAllowlist: vi.fn(), replaceModelAllowlist: vi.fn(), getRetentionPolicy: vi.fn(), replaceRetentionPolicy: vi.fn(), issuePasswordReset: vi.fn(),
     reauthenticate: vi.fn().mockResolvedValue(undefined),

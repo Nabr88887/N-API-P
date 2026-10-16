@@ -1,6 +1,7 @@
 .git
 .gitignore
 .codex
+.claude
 .agent-board
 .agents
 .env
@@ -8,8 +9,13 @@
 AGENTS.md
 credentials
 docs
+docs/reports
 logs
 openspec
+deploy/BACKUP-RESTORE.md
+deploy/PILOT-APPROVAL-PACKAGE.md
+deploy/PILOT-ROLLBACK-CHECKLIST.md
+deploy/RUNBOOK.md
 secrets
 tmp
 
@@ -29,6 +35,7 @@ local-demo/.runtime/*
 *.pfx
 *.test
 *.tsbuildinfo
+backend/n-api-p
 
 backend/internal/web/static/build
 frontend/blob-report

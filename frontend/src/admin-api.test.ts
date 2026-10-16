@@ -1,10 +1,33 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createAdminPortalClient } from './admin-api'
+import { rememberCSRFToken } from './portal-session'
 
 afterEach(() => vi.restoreAllMocks())
 
 describe('admin portal client', () => {
+  it('creates a team with the existing JSON and same-origin CSRF contract', async () => {
+    const team = { id: 'team-new', name: 'Internal Test', status: 'active', member_count: 0, created_at: '2026-10-09T01:00:00Z' }
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(team), { status: 201 }))
+    rememberCSRFToken('synthetic-team-csrf')
+    try {
+      const result = await createAdminPortalClient().createTeam('Internal Test')
+
+      expect(result).toEqual(team)
+      expect(fetchMock).toHaveBeenCalledWith('/api/v1/teams', expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ name: 'Internal Test' }),
+        credentials: 'same-origin',
+        cache: 'no-store',
+      }))
+      const headers = fetchMock.mock.calls[0][1]?.headers as Headers
+      expect(headers.get('Content-Type')).toBe('application/json')
+      expect(headers.get('X-CSRF-Token')).toBe('synthetic-team-csrf')
+    } finally {
+      rememberCSRFToken('')
+    }
+  })
+
   it('keeps account filters bounded and encoded', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ data: [], pagination: { has_more: false } }), { status: 200 }))
     const client = createAdminPortalClient()
