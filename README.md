@@ -1,12 +1,24 @@
 # N-API-P
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 N-API-P is a self-hosted, OpenAI-compatible gateway for routing requests
 through NewAPI while keeping upstream credentials on the server. It provides
 authentication, model policy, usage attribution, rate limits, audit metadata,
 and an embedded administration UI.
 
-This repository is an independent open-source project. It contains no
-production credentials, customer data, or provider account configuration.
+N-API-P is an open-source graduation design project created by a student at
+the University of South China. It is under active development, and its
+features and interfaces may change. The complete project source is released
+under the MIT License.
+
+The project is intended for learning, research, and evaluation. It has not
+been independently assessed for production use; review and test it in your
+own environment before deployment. Use it only in authorized settings and in
+compliance with applicable laws and upstream provider terms. This project
+description does not add restrictions to the MIT License. The repository does
+not contain production credentials, customer data, or provider account
+configuration.
 
 ## Features
 
