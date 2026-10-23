@@ -143,7 +143,7 @@ select:focus-visible { outline: 3px solid #d69c36; outline-offset: 2px; }
 .search-input-wrap input::placeholder { color: var(--faint); }
 .clear-search { display: grid; flex: 0 0 auto; width: 28px; height: 28px; place-items: center; padding: 0; border: 0; border-radius: 5px; color: var(--muted); background: transparent; cursor: pointer; }
 .clear-search:hover { color: var(--ink); background: #eef3ef; }
-.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); box-shadow: var(--shadow); }
+.table-wrap { position: relative; overflow-x: auto; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); box-shadow: var(--shadow); }
 table { width: 100%; min-width: 620px; border-collapse: collapse; text-align: left; }
 th { padding: 13px 16px; border-bottom: 1px solid var(--line); color: var(--faint); font-size: 10px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
 td { padding: 15px 16px; border-bottom: 1px solid #edf1ee; color: var(--ink); font-size: 12px; }

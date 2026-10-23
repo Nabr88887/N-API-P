@@ -2,6 +2,11 @@ package httpapi
 
 import (
 	"context"
+	"database/sql"
+	"database/sql/driver"
+	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +15,9 @@ import (
 
 	"n-api-p/internal/access"
 	"n-api-p/internal/audit"
+	"n-api-p/internal/database"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestAuditMetadataListHandlerReturnsNoStorePagedMetadataWithoutRawContent(t *testing.T) {
@@ -53,6 +61,106 @@ func TestAuditMetadataGetHandlerReturnsOneRecordAndEnforcesRole(t *testing.T) {
 	}
 }
 
+func TestAuditMetadataHandlersClassifyRepositoryFailuresWithoutExposingDetails(t *testing.T) {
+	session := access.ActivePortalSession{IdentityID: "admin-1", Role: access.RoleSystemAdministrator}
+	failures := []struct {
+		name   string
+		err    error
+		status int
+		code   ErrorCode
+	}{
+		{name: "unexpected repository failure", err: errors.New("synthetic metadata repository failure"), status: http.StatusInternalServerError, code: CodeInternalError},
+		{name: "database unavailable", err: audit.ErrMetadataUnavailable, status: http.StatusServiceUnavailable, code: CodeAuditUnavailable},
+		{name: "connection exception", err: &pgconn.PgError{Code: "08006", Message: "synthetic connection failure"}, status: http.StatusServiceUnavailable, code: CodeAuditUnavailable},
+		{name: "closed pgx connection", err: pgconn.ErrConnClosed, status: http.StatusServiceUnavailable, code: CodeAuditUnavailable},
+		{name: "bad driver connection", err: driver.ErrBadConn, status: http.StatusServiceUnavailable, code: CodeAuditUnavailable},
+		{name: "wrapped connection failure", err: fmt.Errorf("%w: %w", audit.ErrMetadataUnavailable, pgconn.ErrConnClosed), status: http.StatusServiceUnavailable, code: CodeAuditUnavailable},
+		{name: "SQL syntax failure", err: &pgconn.PgError{Code: "42601", Message: "synthetic SQL failure"}, status: http.StatusInternalServerError, code: CodeInternalError},
+		{name: "SQL resource failure", err: &pgconn.PgError{Code: "53200", Message: "synthetic SQL failure"}, status: http.StatusInternalServerError, code: CodeInternalError},
+		{name: "request deadline", err: context.DeadlineExceeded, status: http.StatusInternalServerError, code: CodeInternalError},
+		{name: "request cancellation", err: context.Canceled, status: http.StatusInternalServerError, code: CodeInternalError},
+		{name: "network wrapped deadline", err: &net.OpError{Op: "read", Net: "tcp", Err: context.DeadlineExceeded}, status: http.StatusInternalServerError, code: CodeInternalError},
+		{name: "invalid request", err: audit.ErrInvalidMetadataRequest, status: http.StatusBadRequest, code: CodeInvalidRequest},
+		{name: "not found", err: audit.ErrMetadataNotFound, status: http.StatusNotFound, code: CodeNotFound},
+	}
+	for _, failure := range failures {
+		t.Run(failure.name, func(t *testing.T) {
+			connection := sql.OpenDB(&auditMetadataFailureConnector{err: failure.err})
+			t.Cleanup(func() {
+				if err := connection.Close(); err != nil {
+					t.Errorf("close synthetic database: %v", err)
+				}
+			})
+			repository := database.NewRepository(connection)
+			service, err := audit.NewMetadataService(repository)
+			if err != nil {
+				t.Fatalf("NewMetadataService() error = %v", err)
+			}
+			handlers := []struct {
+				name    string
+				handler http.Handler
+				path    string
+			}{
+				{name: "list", handler: NewAdminAuditMetadataListHandler(service), path: "/api/v1/audits?limit=25"},
+				{name: "get", handler: NewAdminAuditMetadataGetHandler(service), path: "/api/v1/audits/" + rawViewHTTPAuditID},
+			}
+			for _, test := range handlers {
+				t.Run(test.name, func(t *testing.T) {
+					recorder := httptest.NewRecorder()
+					withEmployeeSession(test.handler, session).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, test.path, nil))
+
+					assertHTTPError(t, recorder, failure.status, failure.code)
+					if recorder.Header().Get("Cache-Control") != "no-store" {
+						t.Fatal("metadata failure response must not be cached")
+					}
+					if strings.Contains(recorder.Body.String(), failure.err.Error()) {
+						t.Fatalf("response exposed repository error: %s", recorder.Body.String())
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestAuditMetadataHandlersRejectUnauthorizedSessionsBeforeRepositoryCalls(t *testing.T) {
+	tests := []struct {
+		name    string
+		session access.ActivePortalSession
+		status  int
+		code    ErrorCode
+	}{
+		{name: "anonymous", status: http.StatusUnauthorized, code: CodeAuthenticationRequired},
+		{name: "employee", session: access.ActivePortalSession{IdentityID: "employee-1", Role: access.RoleEmployee}, status: http.StatusForbidden, code: CodeForbidden},
+		{name: "team administrator", session: access.ActivePortalSession{IdentityID: "team-admin-1", Role: access.RoleTeamAdministrator}, status: http.StatusForbidden, code: CodeForbidden},
+	}
+	for _, test := range tests {
+		for _, operation := range []string{"list", "get"} {
+			t.Run(test.name+"/"+operation, func(t *testing.T) {
+				repository := &failingAuditMetadataRepository{err: audit.ErrMetadataUnavailable}
+				service, err := audit.NewMetadataService(repository)
+				if err != nil {
+					t.Fatalf("NewMetadataService() error = %v", err)
+				}
+				handler := NewAdminAuditMetadataListHandler(service)
+				path := "/api/v1/audits?limit=25"
+				if operation == "get" {
+					handler = NewAdminAuditMetadataGetHandler(service)
+					path = "/api/v1/audits/" + rawViewHTTPAuditID
+				}
+				if test.session.IdentityID != "" {
+					handler = withEmployeeSession(handler, test.session)
+				}
+				recorder := httptest.NewRecorder()
+				handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+				assertHTTPError(t, recorder, test.status, test.code)
+				if repository.calls != 0 {
+					t.Fatal("unauthorized metadata request reached the repository")
+				}
+			})
+		}
+	}
+}
+
 func value[T ~string](input *T) string {
 	if input == nil {
 		return ""
@@ -66,6 +174,31 @@ type fakeAuditMetadataService struct {
 	listInput audit.MetadataListInput
 	getInput  audit.MetadataGetInput
 	listCalls int
+}
+
+type failingAuditMetadataRepository struct {
+	err   error
+	calls int
+}
+
+type auditMetadataFailureConnector struct{ err error }
+
+func (connector *auditMetadataFailureConnector) Connect(context.Context) (driver.Conn, error) {
+	return nil, connector.err
+}
+func (connector *auditMetadataFailureConnector) Driver() driver.Driver { return connector }
+func (connector *auditMetadataFailureConnector) Open(string) (driver.Conn, error) {
+	return nil, connector.err
+}
+
+func (repository *failingAuditMetadataRepository) ListAuditMetadata(context.Context, audit.MetadataFilter) (audit.MetadataPage, error) {
+	repository.calls++
+	return audit.MetadataPage{}, repository.err
+}
+
+func (repository *failingAuditMetadataRepository) GetAuditMetadata(context.Context, string) (audit.Metadata, error) {
+	repository.calls++
+	return audit.Metadata{}, repository.err
 }
 
 func (service *fakeAuditMetadataService) List(_ context.Context, input audit.MetadataListInput) (audit.MetadataPage, error) {

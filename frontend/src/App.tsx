@@ -22,7 +22,7 @@ import type { LucideIcon } from 'lucide-react'
 import { createEmployeePortalClient, type EmployeePortalClient, type KeyIssuance, type PersonalKey, type UsageRecord } from './employee-api'
 import { TeamWorkspace } from './TeamWorkspace'
 import { createTeamPortalClient, type TeamPortalClient } from './team-api'
-import { createAdminPortalClient, type AdminPortalClient, type HealthResponse } from './admin-api'
+import { classifyAdminAPIError, createAdminPortalClient, type AdminAPIErrorKind, type AdminPortalClient, type HealthResponse } from './admin-api'
 import { SystemAdminWorkspace } from './SystemAdminWorkspace'
 import { CriticalFaultBanners } from './OperationsWorkspace'
 import { SecurityEventsWorkspace } from './SecurityEventsWorkspace'
@@ -91,7 +91,7 @@ function roleName(role: Role): string {
   return roleProfiles[role].label
 }
 
-export function App({ role = 'system_administrator', employeeClient: injectedEmployeeClient, teamClient: injectedTeamClient, adminClient: injectedAdminClient, teamID = '', teamIDs, identityEmail = '', onLogout }: { role?: Role; employeeClient?: EmployeePortalClient; teamClient?: TeamPortalClient; adminClient?: AdminPortalClient; teamID?: string; teamIDs?: string[]; identityEmail?: string; onLogout?: () => Promise<void> }) {
+export function App({ role = 'system_administrator', employeeClient: injectedEmployeeClient, teamClient: injectedTeamClient, adminClient: injectedAdminClient, teamID = '', teamIDs, identityEmail = '', onLogout, onSessionExpired }: { role?: Role; employeeClient?: EmployeePortalClient; teamClient?: TeamPortalClient; adminClient?: AdminPortalClient; teamID?: string; teamIDs?: string[]; identityEmail?: string; onLogout?: () => Promise<void>; onSessionExpired?: () => void }) {
   const profile = roleProfiles[role]
   const [activeSection, setActiveSection] = useState('Overview')
   const [navigationOpen, setNavigationOpen] = useState(false)
@@ -100,6 +100,8 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
   const [teamClient] = useState(() => injectedTeamClient ?? createTeamPortalClient())
   const [adminClient] = useState(() => injectedAdminClient ?? createAdminPortalClient())
   const [operationsHealth, setOperationsHealth] = useState<HealthResponse | null>(null)
+  const [operationsHealthError, setOperationsHealthError] = useState<AdminAPIErrorKind | null>(null)
+  const [operationsHealthRetry, setOperationsHealthRetry] = useState(0)
   const [personalKeys, setPersonalKeys] = useState<PersonalKey[]>([])
   const [usageRecords, setUsageRecords] = useState<UsageRecord[]>([])
   const [personalKeyCursor, setPersonalKeyCursor] = useState<string | undefined>()
@@ -123,7 +125,8 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
 
   const criticalFaults = activeCriticalFaults(operationsHealth)
   const auditUnavailable = criticalFaults.includes('audit_unavailable')
-  const operationsHealthPending = role === 'system_administrator' && operationsHealth === null
+  const operationsHealthUnavailable = role === 'system_administrator' && operationsHealth === null && operationsHealthError !== null
+  const operationsHealthPending = role === 'system_administrator' && operationsHealth === null && operationsHealthError === null
 
   function selectSection(label: string) {
     if (role === 'employee' && label !== 'Overview') {
@@ -166,9 +169,17 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
       inFlight = true
       try {
         const health = await adminClient.getOperationsHealth()
-        if (!cancelled) setOperationsHealth(health)
-      } catch {
-        if (!cancelled) setOperationsHealth(databaseUnavailableHealth())
+        if (!cancelled) {
+          setOperationsHealth(health)
+          setOperationsHealthError(null)
+        }
+      } catch (failure: unknown) {
+        const kind = classifyAdminAPIError(failure)
+        if (!cancelled) {
+          setOperationsHealth(null)
+          setOperationsHealthError(kind)
+          if (kind === 'authentication') onSessionExpired?.()
+        }
       } finally {
         inFlight = false
       }
@@ -180,7 +191,7 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
       cancelled = true
       window.clearInterval(intervalID)
     }
-  }, [adminClient, role])
+  }, [adminClient, onSessionExpired, operationsHealthRetry, role])
 
   useEffect(() => {
     if (role !== 'employee' || activeSection === 'Overview') return
@@ -349,8 +360,8 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
 
         <div className="sidebar-footer">
           <div className="status-chip">
-            <span className={`status-dot${role !== 'system_administrator' || operationsHealthPending ? ' status-dot-checking' : criticalFaults.length ? ' status-dot-critical' : ''}`} aria-hidden="true" />
-            <span>{role !== 'system_administrator' ? 'Gateway status unavailable' : criticalFaults.length ? 'Critical fault active' : operationsHealthPending ? 'Checking gateway' : 'Gateway operational'}</span>
+            <span className={`status-dot${role !== 'system_administrator' || operationsHealthPending || operationsHealthUnavailable ? ' status-dot-checking' : criticalFaults.length ? ' status-dot-critical' : ''}`} aria-hidden="true" />
+            <span>{role !== 'system_administrator' || operationsHealthUnavailable ? 'Gateway status unavailable' : criticalFaults.length ? 'Critical fault active' : operationsHealthPending ? 'Checking gateway' : 'Gateway operational'}</span>
           </div>
           <a className="support-link" href="#support">
             <CircleHelp size={17} strokeWidth={1.8} aria-hidden="true" />
@@ -411,7 +422,10 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
               </div>
             </header>
 
-            {role === 'system_administrator' && <CriticalFaultBanners health={operationsHealth} />}
+            {role === 'system_administrator' && <>
+              <CriticalFaultBanners health={operationsHealth} />
+              <OperationsHealthError kind={operationsHealthError} onRetry={() => { setOperationsHealthError(null); setOperationsHealthRetry((current) => current + 1) }} onSessionExpired={onSessionExpired} />
+            </>}
 
             {activeSection === 'Overview' ? (
               <>
@@ -420,17 +434,17 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
                     <div className="signal-icon" aria-hidden="true"><Activity size={18} /></div>
                     <div>
                       <p>Gateway status</p>
-                      <strong>{role !== 'system_administrator' ? 'Not available' : criticalFaults.length ? 'Action required' : operationsHealthPending ? 'Checking' : 'Operational'}</strong>
+                      <strong>{role !== 'system_administrator' ? 'Not available' : operationsHealthUnavailable ? 'Health check unavailable' : criticalFaults.length ? 'Action required' : operationsHealthPending ? 'Checking' : 'Operational'}</strong>
                     </div>
-                    <span className="signal-meta">{role !== 'system_administrator' ? 'Gateway health is restricted to system administrators' : criticalFaults.length ? `${criticalFaults.length} critical condition${criticalFaults.length === 1 ? '' : 's'}` : operationsHealthPending ? 'Loading current status' : 'No critical faults'}</span>
+                    <span className="signal-meta">{role !== 'system_administrator' ? 'Gateway health is restricted to system administrators' : operationsHealthUnavailable ? 'Retry health check' : criticalFaults.length ? `${criticalFaults.length} critical condition${criticalFaults.length === 1 ? '' : 's'}` : operationsHealthPending ? 'Loading current status' : 'No critical faults'}</span>
                   </div>
                   <div className="signal-card">
                     <div className="signal-icon signal-icon-blue" aria-hidden="true"><ShieldCheck size={18} /></div>
                     <div>
                       <p>Audit capture</p>
-                      <strong>{role !== 'system_administrator' ? 'Not available' : auditUnavailable ? 'Unavailable' : operationsHealthPending ? 'Checking' : 'Healthy'}</strong>
+                      <strong>{role !== 'system_administrator' ? 'Not available' : operationsHealthUnavailable ? 'Health check unavailable' : auditUnavailable ? 'Unavailable' : operationsHealthPending ? 'Checking' : 'Healthy'}</strong>
                     </div>
-                    <span className="signal-meta">{role !== 'system_administrator' ? 'Audit health is restricted to system administrators' : auditUnavailable ? 'Chat dispatch blocked' : operationsHealthPending ? 'Loading current status' : 'No active audit fault'}</span>
+                    <span className="signal-meta">{role !== 'system_administrator' ? 'Audit health is restricted to system administrators' : operationsHealthUnavailable ? 'Retry health check' : auditUnavailable ? 'Chat dispatch blocked' : operationsHealthPending ? 'Loading current status' : 'No active audit fault'}</span>
                   </div>
                   <div className="signal-card">
                     <div className="signal-icon signal-icon-amber" aria-hidden="true"><Boxes size={18} /></div>
@@ -474,7 +488,7 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
               </>
             ) : role === 'employee' ? employeeSurface() : role === 'team_administrator' ? (
               <TeamWorkspace key={`${activeSection}:${(teamIDs ?? [teamID]).join('|')}`} section={activeSection} teamID={teamID} teamIDs={teamIDs} client={teamClient} />
-            ) : activeSection === 'Security events' ? <SecurityEventsWorkspace client={adminClient} /> : activeSection === 'Investigations' ? <InvestigationWorkspace client={adminClient} /> : <SystemAdminWorkspace key={activeSection} section={activeSection} client={adminClient} />}
+            ) : activeSection === 'Security events' ? <SecurityEventsWorkspace client={adminClient} /> : activeSection === 'Investigations' ? <InvestigationWorkspace client={adminClient} /> : <SystemAdminWorkspace key={activeSection} section={activeSection} client={adminClient} onSessionExpired={onSessionExpired} />}
           </div>
         </main>
       </div>
@@ -534,11 +548,19 @@ export function App({ role = 'system_administrator', employeeClient: injectedEmp
   )
 }
 
-function databaseUnavailableHealth(): HealthResponse {
-  const checkedAt = new Date().toISOString()
-  return {
-    state: 'unhealthy',
-    components: [{ name: 'database_unavailable', state: 'unhealthy', detail_code: 'database_unavailable', checked_at: checkedAt }],
-    checked_at: checkedAt,
-  }
+function OperationsHealthError({ kind, onRetry, onSessionExpired }: { kind: AdminAPIErrorKind | null; onRetry: () => void; onSessionExpired?: () => void }) {
+  if (!kind) return null
+  const sessionExpired = kind === 'authentication'
+  return <div className="error-state" role="alert" aria-label={sessionExpired ? 'Session expired' : 'Gateway health request failed'}>
+    <p>{operationsHealthErrorMessage(kind)}</p>
+    <button className="button button-secondary button-small" type="button" onClick={sessionExpired && onSessionExpired ? onSessionExpired : onRetry}>{sessionExpired ? 'Sign in again' : 'Retry health check'}</button>
+  </div>
+}
+
+function operationsHealthErrorMessage(kind: AdminAPIErrorKind): string {
+  if (kind === 'authentication') return 'Your session has expired. Please sign in again.'
+  if (kind === 'network') return 'Unable to reach gateway health. Check your connection and retry.'
+  if (kind === 'database') return 'Gateway health is temporarily unavailable because the database cannot be reached.'
+  if (kind === 'server') return 'Gateway health could not be loaded because the server returned an internal error.'
+  return 'Unable to load gateway health right now. Retry shortly.'
 }

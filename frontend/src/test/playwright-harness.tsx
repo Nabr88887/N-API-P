@@ -87,7 +87,7 @@ function adminClient(): AdminPortalClient {
     name: index === 0 ? key.name : `deploy-${index + 1}`,
     prefix: `nap_${String(index + 87654321).slice(-8)}`,
   }))
-  const model: Model = { id: 'gpt-internal', status: 'allowed', price_version: '2026-01', updated_at: now }
+  const model: Model = { id: 'gpt-internal', status: 'allowed', input_unit_price: '0', output_unit_price: '0', price_version: '2026-01', updated_at: now }
   const audit: AuditMetadata = { id: 'audit-1', request_id: 'request-1', key_id: personalKey.id, owner_account_id: account.id, team_id: team.id, model_id: model.id, capture_status: 'complete', outcome: 'success', observed_request_bytes: 512, observed_response_bytes: 1024, created_at: now, updated_at: now }
   const event: OperationalEvent = { id: 'event-1', event_type: 'audit_unavailable', severity: 'critical', occurred_at: now }
   const health: HealthResponse = fault === 'audit_unavailable'

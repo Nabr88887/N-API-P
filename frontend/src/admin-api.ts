@@ -39,8 +39,41 @@ export type ElevatedAuditUsage = { input_tokens: number; output_tokens: number; 
 export type ElevatedAuditRecord = { id: string; request_id: string; owner_kind: 'personal' | 'service'; identity_id?: string; service_account_id?: string; responsible_identity_id?: string; team_id: string; model_id: string; request_capture_status: AuditCaptureStatus | 'unavailable'; response_capture_status: AuditCaptureStatus | 'unavailable'; outcome: AuditOutcome; created_at: string; updated_at: string; completed_at?: string; request?: unknown; response?: unknown; request_fragment?: string; response_fragment?: string; usage?: ElevatedAuditUsage }
 export type ElevatedAuditQuery = { identity_id?: string; service_account_id?: string; responsible_identity_id?: string; from?: string; to?: string; model_id?: string; capture_status?: AuditCaptureStatus; outcome?: AuditOutcome; owner_kind?: 'personal' | 'service'; full_text?: string; audit_ids?: string[]; cursor?: string; limit?: number }
 
+export type AdminAPIErrorKind = 'authentication' | 'reauthentication' | 'network' | 'database' | 'server' | 'unknown'
+
 export class AdminAPIError extends Error {
-  constructor(public readonly code: string) { super(code) }
+  public readonly kind: AdminAPIErrorKind
+
+  constructor(public readonly code: string, public readonly status?: number, kind?: AdminAPIErrorKind) {
+    super(code)
+    this.name = 'AdminAPIError'
+    this.kind = kind ?? classifyAdminAPIErrorFields(code, status)
+  }
+}
+
+export function classifyAdminAPIError(reason: unknown): AdminAPIErrorKind {
+  if (reason instanceof AdminAPIError) return reason.kind
+  if (reason instanceof TypeError) return 'network'
+  if (!reason || typeof reason !== 'object') return 'unknown'
+  const candidate = reason as { code?: unknown; status?: unknown; kind?: unknown }
+  if (typeof candidate.kind === 'string' && isAdminAPIErrorKind(candidate.kind)) return candidate.kind
+  return classifyAdminAPIErrorFields(
+    typeof candidate.code === 'string' ? candidate.code : '',
+    typeof candidate.status === 'number' ? candidate.status : undefined,
+  )
+}
+
+function classifyAdminAPIErrorFields(code: string, status?: number): AdminAPIErrorKind {
+  if (code === 'REAUTHENTICATION_REQUIRED') return 'reauthentication'
+  if (status === 401 || code === 'AUTHENTICATION_REQUIRED') return 'authentication'
+  if (code === 'AUDIT_UNAVAILABLE' || code === 'DATABASE_UNAVAILABLE') return 'database'
+  if (code === 'NETWORK_ERROR') return 'network'
+  if (status !== undefined && status >= 500 || code === 'INTERNAL_ERROR') return 'server'
+  return 'unknown'
+}
+
+function isAdminAPIErrorKind(value: string): value is AdminAPIErrorKind {
+  return ['authentication', 'reauthentication', 'network', 'database', 'server', 'unknown'].includes(value)
 }
 
 export interface AdminPortalClient {
@@ -89,12 +122,17 @@ export function createAdminPortalClient(): AdminPortalClient {
     if (init.body !== undefined) headers.set('Content-Type', 'application/json')
 	const csrfToken = currentCSRFToken()
 	if (init.method && init.method !== 'GET' && csrfToken) headers.set('X-CSRF-Token', csrfToken)
-    const response = await fetch(path, { ...init, headers, credentials: 'same-origin', cache: 'no-store' })
+	let response: Response
+	try {
+	  response = await fetch(path, { ...init, headers, credentials: 'same-origin', cache: 'no-store' })
+	} catch {
+	  throw new AdminAPIError('NETWORK_ERROR', undefined, 'network')
+	}
 	rememberCSRFToken(response.headers.get('X-CSRF-Token'))
     if (!response.ok) {
       let code = 'INTERNAL_ERROR'
       try { code = (await response.json() as { error?: { code?: string } }).error?.code ?? code } catch { /* stable transport fallback */ }
-      throw new AdminAPIError(code)
+      throw new AdminAPIError(code, response.status)
     }
     if (response.status === 204) return undefined as T
     return response.json() as Promise<T>
@@ -145,12 +183,17 @@ export function createAdminPortalClient(): AdminPortalClient {
       const headers = new Headers({ 'Content-Type': 'application/json' })
       const csrfToken = currentCSRFToken()
       if (csrfToken) headers.set('X-CSRF-Token', csrfToken)
-      const response = await fetch('/api/v1/audits/exports', { method: 'POST', body: JSON.stringify(serializeElevatedAuditQuery(query)), headers, credentials: 'same-origin', cache: 'no-store', signal })
+	  let response: Response
+	  try {
+	    response = await fetch('/api/v1/audits/exports', { method: 'POST', body: JSON.stringify(serializeElevatedAuditQuery(query)), headers, credentials: 'same-origin', cache: 'no-store', signal })
+	  } catch {
+	    throw new AdminAPIError('NETWORK_ERROR', undefined, 'network')
+	  }
       rememberCSRFToken(response.headers.get('X-CSRF-Token'))
       if (!response.ok) {
         let code = 'INTERNAL_ERROR'
         try { code = (await response.json() as { error?: { code?: string } }).error?.code ?? code } catch { /* stable transport fallback */ }
-        throw new AdminAPIError(code)
+        throw new AdminAPIError(code, response.status)
       }
       if (!response.body) throw new AdminAPIError('EXPORT_INCOMPLETE')
       return response.body

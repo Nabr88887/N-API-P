@@ -85,6 +85,8 @@ func writeAuditMetadataError(writer http.ResponseWriter, err error) {
 		writeErrorResponse(writer, CodeInvalidRequest)
 	case errors.Is(err, audit.ErrMetadataNotFound):
 		writeErrorResponse(writer, CodeNotFound)
+	case errors.Is(err, audit.ErrMetadataUnavailable):
+		writeErrorResponse(writer, CodeAuditUnavailable)
 	default:
 		writeErrorResponse(writer, CodeInternalError)
 	}

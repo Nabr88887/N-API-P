@@ -26,6 +26,12 @@ export function Portal({ client: injectedClient }: { client?: PortalClient }) {
     }
   }, [client])
 
+  const handleSessionExpired = useCallback(() => {
+    setIdentity(null)
+    setMode('sign-in')
+    setError('Your session has expired. Please sign in again.')
+  }, [])
+
   const logout = useCallback(async () => {
     await client.logout()
     setIdentity(null)
@@ -49,7 +55,7 @@ export function Portal({ client: injectedClient }: { client?: PortalClient }) {
   }, [client])
 
   if (loading) return <main className="portal-state"><p>Loading session…</p></main>
-  if (identity) return <App role={identity.role} teamID={identity.team_ids?.[0] ?? ''} teamIDs={identity.team_ids} identityEmail={identity.email} onLogout={logout} />
+  if (identity) return <App role={identity.role} teamID={identity.team_ids?.[0] ?? ''} teamIDs={identity.team_ids} identityEmail={identity.email} onLogout={logout} onSessionExpired={handleSessionExpired} />
 
   return (
     <main className="portal-state">

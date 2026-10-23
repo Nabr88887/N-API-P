@@ -6,7 +6,7 @@ import { cleanup } from '@testing-library/react'
 import { App } from './App'
 import type { EmployeePortalClient, KeyIssuance } from './employee-api'
 import type { TeamPortalClient } from './team-api'
-import type { AdminPortalClient, HealthResponse, Team } from './admin-api'
+import { AdminAPIError, type AdminPortalClient, type HealthResponse, type Team } from './admin-api'
 
 afterEach(() => {
   cleanup()
@@ -73,13 +73,38 @@ describe('App', () => {
     expect(screen.getByRole('alert', { name: 'Audit persistence unavailable' })).toBeInTheDocument()
   })
 
-  it('shows a fixed database fault when operations health cannot be read', async () => {
+  it('does not report a network failure as a database fault', async () => {
     const client = adminClient()
-    client.getOperationsHealth = vi.fn().mockRejectedValue(new Error('dial /private/socket password=secret'))
+    client.getOperationsHealth = vi.fn().mockRejectedValue(new TypeError('Failed to fetch from a private endpoint'))
+    render(<App role="system_administrator" adminClient={client} />)
+
+    expect(await screen.findByText('Unable to reach gateway health. Check your connection and retry.')).toBeInTheDocument()
+    expect(screen.getByText('Gateway status unavailable')).toBeInTheDocument()
+    expect(screen.getAllByText('Health check unavailable')).toHaveLength(2)
+    expect(screen.queryByText('Database unavailable')).not.toBeInTheDocument()
+  })
+
+  it('reports a database fault only when the health payload names the database component', async () => {
+    const client = adminClient()
+    client.getOperationsHealth = vi.fn().mockResolvedValue({
+      state: 'unhealthy',
+      components: [{ name: 'database_unavailable', state: 'unhealthy', checked_at: '2026-08-14T09:00:00Z' }],
+      checked_at: '2026-08-14T09:00:00Z',
+    })
     render(<App role="system_administrator" adminClient={client} />)
 
     expect(await screen.findByRole('alert', { name: 'Database unavailable' })).toBeInTheDocument()
-    expect(screen.queryByText(/private\/socket|password=secret/)).not.toBeInTheDocument()
+  })
+
+  it('prompts for sign-in when operations health reports an expired session', async () => {
+    const client = adminClient()
+    client.getOperationsHealth = vi.fn().mockRejectedValue(new AdminAPIError('AUTHENTICATION_REQUIRED', 401))
+    const onSessionExpired = vi.fn()
+    render(<App role="system_administrator" adminClient={client} onSessionExpired={onSessionExpired} />)
+
+    expect(await screen.findByText('Your session has expired. Please sign in again.')).toBeInTheDocument()
+    expect(screen.queryByText('Database unavailable')).not.toBeInTheDocument()
+    expect(onSessionExpired).toHaveBeenCalledOnce()
   })
 
   it('refreshes critical faults and clears banners only after verified recovery', async () => {

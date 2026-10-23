@@ -1,11 +1,29 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { createAdminPortalClient } from './admin-api'
+import { AdminAPIError, createAdminPortalClient } from './admin-api'
 import { rememberCSRFToken } from './portal-session'
 
 afterEach(() => vi.restoreAllMocks())
 
 describe('admin portal client', () => {
+  it.each([
+    { name: 'authentication failures', status: 401, code: 'AUTHENTICATION_REQUIRED', kind: 'authentication' },
+    { name: 'database failures', status: 503, code: 'AUDIT_UNAVAILABLE', kind: 'database' },
+    { name: 'server failures', status: 500, code: 'INTERNAL_ERROR', kind: 'server' },
+    { name: 'other service unavailable responses', status: 503, code: 'INTERNAL_ERROR', kind: 'server' },
+  ])('classifies structured $name with status and code', async ({ status, code, kind }) => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ error: { code } }), { status }))
+
+    await expect(createAdminPortalClient().listAudits()).rejects.toMatchObject({ code, status, kind })
+  })
+
+  it('classifies transport failures without exposing the underlying error', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('Failed to fetch from a private endpoint'))
+
+    await expect(createAdminPortalClient().listAudits()).rejects.toMatchObject({ code: 'NETWORK_ERROR', kind: 'network' })
+    await expect(createAdminPortalClient().listAudits()).rejects.toBeInstanceOf(AdminAPIError)
+  })
+
   it('creates a team with the existing JSON and same-origin CSRF contract', async () => {
     const team = { id: 'team-new', name: 'Internal Test', status: 'active', member_count: 0, created_at: '2026-10-09T01:00:00Z' }
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(team), { status: 201 }))

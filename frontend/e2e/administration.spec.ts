@@ -20,6 +20,18 @@ test.afterEach(async ({ page }) => {
   expect(browserErrors.get(page)).toEqual([])
 })
 
+test('model policy confirmation remains within the viewport and accepts pointer input', async ({ page }) => {
+  await openRole(page, 'system_administrator')
+  await navigate(page, 'Model policy')
+  await assertLayout(page)
+  await page.getByRole('button', { name: 'Save model policy' }).click()
+  const button = page.getByRole('dialog', { name: 'Confirm model policy' }).getByRole('button', { name: 'Confirm model policy change' })
+  await expect(button).toBeVisible()
+  await assertLayout(page)
+  await button.click()
+  await expect(page.getByRole('dialog', { name: 'Reauthenticate' })).toBeVisible()
+})
+
 async function capture(page: Page, testInfo: TestInfo, name: string) {
   await assertLayout(page)
   await assertAccessible(page)
@@ -45,12 +57,13 @@ async function assertLayout(page: Page) {
         return { name: dialog.getAttribute('aria-labelledby') ?? 'unlabelled', bounds }
       })
       .filter(({ bounds }) => bounds.width > 0 && bounds.height > 0 && (
-        bounds.left < 0 || bounds.top < 0 || bounds.right > window.innerWidth || bounds.bottom > window.innerHeight
+        bounds.left < 0 || bounds.top < 0 || bounds.right > document.documentElement.clientWidth || bounds.bottom > document.documentElement.clientHeight
       ))
       .map(({ name }) => name)
-    return { bodyWidth: document.body.scrollWidth, viewportWidth: window.innerWidth, overflowingDialogs }
+    return { bodyWidth: document.body.scrollWidth, documentWidth: document.documentElement.scrollWidth, viewportWidth: document.documentElement.clientWidth, overflowingDialogs }
   })
   expect(dimensions.bodyWidth).toBeLessThanOrEqual(dimensions.viewportWidth)
+  expect(dimensions.documentWidth).toBeLessThanOrEqual(dimensions.viewportWidth)
   expect(dimensions.overflowingDialogs).toEqual([])
 }
 

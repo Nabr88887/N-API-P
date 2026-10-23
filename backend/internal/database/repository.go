@@ -3,14 +3,18 @@ package database
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"n-api-p/internal/audit"
 	"n-api-p/internal/operations"
+	"net"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const MaxPageSize = 100
@@ -210,6 +214,9 @@ func (r *Repository) ListAuditMetadata(ctx context.Context, filter audit.Metadat
 	}
 	records, err := r.listAuditRecords(ctx, databaseFilter)
 	if err != nil {
+		if isAuditMetadataDatabaseUnavailable(err) {
+			return audit.MetadataPage{}, fmt.Errorf("%w: %w", audit.ErrMetadataUnavailable, err)
+		}
 		return audit.MetadataPage{}, err
 	}
 	page := audit.MetadataPage{Records: make([]audit.Metadata, 0, min(len(records), filter.Limit))}
@@ -230,9 +237,33 @@ func (r *Repository) GetAuditMetadata(ctx context.Context, auditID string) (audi
 		return audit.Metadata{}, audit.ErrMetadataNotFound
 	}
 	if err != nil {
+		if isAuditMetadataDatabaseUnavailable(err) {
+			return audit.Metadata{}, fmt.Errorf("%w: %w", audit.ErrMetadataUnavailable, err)
+		}
 		return audit.Metadata{}, fmt.Errorf("get audit metadata: %w", err)
 	}
 	return auditMetadata(record), nil
+}
+
+func isAuditMetadataDatabaseUnavailable(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, sql.ErrConnDone) || errors.Is(err, driver.ErrBadConn) || errors.Is(err, pgconn.ErrConnClosed) {
+		return true
+	}
+	var postgresError *pgconn.PgError
+	if errors.As(err, &postgresError) {
+		switch postgresError.Code {
+		case "53300", "57P01", "57P02", "57P03", "57P05":
+			return true
+		default:
+			return strings.HasPrefix(postgresError.Code, "08")
+		}
+	}
+	var connectError *pgconn.ConnectError
+	var networkError *net.OpError
+	return errors.As(err, &connectError) || errors.As(err, &networkError)
 }
 
 type auditRecordScanner interface {

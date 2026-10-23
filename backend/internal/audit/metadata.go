@@ -14,6 +14,7 @@ const MaxMetadataPageSize = 100
 var (
 	ErrInvalidMetadataRequest = errors.New("invalid audit metadata request")
 	ErrMetadataNotFound       = errors.New("audit metadata not found")
+	ErrMetadataUnavailable    = errors.New("audit metadata unavailable")
 )
 
 type Metadata struct {
@@ -86,7 +87,11 @@ func (service *MetadataService) List(ctx context.Context, input MetadataListInpu
 	if service == nil || service.repository == nil || !validMetadataFilter(input.Filter) {
 		return MetadataPage{}, ErrInvalidMetadataRequest
 	}
-	return service.repository.ListAuditMetadata(ctx, input.Filter)
+	page, err := service.repository.ListAuditMetadata(ctx, input.Filter)
+	if err != nil {
+		return MetadataPage{}, err
+	}
+	return page, nil
 }
 
 func (service *MetadataService) Get(ctx context.Context, input MetadataGetInput) (Metadata, error) {
@@ -97,7 +102,11 @@ func (service *MetadataService) Get(ctx context.Context, input MetadataGetInput)
 	if service == nil || service.repository == nil || !validMetadataID(auditID) {
 		return Metadata{}, ErrInvalidMetadataRequest
 	}
-	return service.repository.GetAuditMetadata(ctx, auditID)
+	record, err := service.repository.GetAuditMetadata(ctx, auditID)
+	if err != nil {
+		return Metadata{}, err
+	}
+	return record, nil
 }
 
 func validMetadataFilter(filter MetadataFilter) bool {
