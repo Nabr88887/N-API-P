@@ -53,6 +53,9 @@ deploy/        环境与反向代理配置示例
 local-demo/    使用合成数据的本地演示环境
 ```
 
+下载、启动本地演示、内部部署和 Audit 故障处理请参阅
+[中文操作手册](docs/OPERATIONS.zh-CN.md)。
+
 ## 本地开发
 
 后端需要 Go；前端需要 Node.js 和 npm。

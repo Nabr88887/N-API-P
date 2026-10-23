@@ -60,6 +60,9 @@ deploy/        Environment and reverse-proxy examples
 local-demo/    Synthetic local demonstration stack
 ```
 
+For download, local demo, internal deployment, and Audit troubleshooting, see
+the [Chinese operations guide](docs/OPERATIONS.zh-CN.md).
+
 ## Local Development
 
 The backend requires Go and the frontend requires Node.js with npm.
