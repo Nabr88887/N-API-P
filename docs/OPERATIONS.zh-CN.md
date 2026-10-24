@@ -18,8 +18,8 @@ N-API-P 通过 HTTPS 访问 NewAPI。上游凭据、审计密钥和数据库连�
 | 内部试运行或生产 | 否，需要完成部署、迁移、密钥和反向代理准备 | 连接受控 PostgreSQL 与 NewAPI |
 
 `local-demo/` 只用于可丢弃的本地演示，不应直接复制成生产配置。真实部署
-前请阅读 [`deploy/RUNBOOK.md`](../deploy/RUNBOOK.md) 和
-[`deploy/BACKUP-RESTORE.md`](../deploy/BACKUP-RESTORE.md)。
+前请使用部署方审核过的内部 Runbook 和备份恢复方案；仓库只提供环境变量、
+反向代理和本地演示示例，不把内部运维文件发布到公开源码中。
 
 ## 2. 下载源码并确认版本
 
@@ -123,8 +123,7 @@ Remove-Item -Recurse -Force .\local-demo\.runtime
 迁移和首个管理员初始化都是运维操作，不会由 GitHub 下载或普通应用启动
 自动完成。管理员初始化时，数据库连接配置必须通过受保护的运行时环境提供；
 账号密码使用不回显输入传给 `/n-api-p-bootstrap`，不要出现在命令行参数、
-Shell 历史、日志或聊天中。具体约束以 [`deploy/RUNBOOK.md`](../deploy/RUNBOOK.md)
-为准。
+Shell 历史、日志或聊天中。具体约束以部署方审核过的内部 Runbook 为准。
 
 ## 5. 日常管理
 
@@ -183,7 +182,5 @@ Shell 历史、日志或聊天中。具体约束以 [`deploy/RUNBOOK.md`](../dep
 ## 8. 相关文件
 
 - [项目中文说明](../README.zh-CN.md)
-- [部署准备 Runbook](../deploy/RUNBOOK.md)
-- [备份与恢复](../deploy/BACKUP-RESTORE.md)
 - [Nginx 配置示例](../deploy/nginx/n-api-p.conf.example)
 - [环境变量占位符](../deploy/n-api-p.env.example)
