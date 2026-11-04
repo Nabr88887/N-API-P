@@ -90,6 +90,31 @@ function Get-LocalDemoContainerID([string]$service) {
     return $containerID[0].Trim()
 }
 
+function Get-LocalDemoOperatorProxyCIDR {
+    $subnets = @(& docker network inspect --format '{{range .IPAM.Config}}{{println .Subnet}}{{end}}' n-api-p-local-demo_default)
+    Assert-NativeSuccess 'inspect local demo network subnet'
+    $subnets = @($subnets | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($subnets.Count -ne 1) {
+        throw 'local demo network does not have exactly one subnet'
+    }
+
+    try {
+        $network = [System.Net.IPNetwork]::Parse($subnets[0])
+    } catch {
+        throw 'local demo network subnet is invalid'
+    }
+    $address = $network.BaseAddress.GetAddressBytes()
+    $privateIPv4 = $address.Length -eq 4 -and (
+        $address[0] -eq 10 -or
+        ($address[0] -eq 172 -and $address[1] -ge 16 -and $address[1] -le 31) -or
+        ($address[0] -eq 192 -and $address[1] -eq 168)
+    )
+    if (-not $privateIPv4 -or $network.PrefixLength -lt 16 -or $network.PrefixLength -gt 30) {
+        throw 'local demo network subnet is outside the private IPv4 boundary'
+    }
+    return $subnets[0]
+}
+
 function Test-LocalDemoStackRunning {
     if (-not (Test-Path -LiteralPath $envFile -PathType Leaf)) {
         return $false
@@ -225,12 +250,14 @@ docker build --pull=false --network none --tag n-api-p-local-demo:latest --file 
 Assert-NativeSuccess 'build local-demo image'
 
 $databaseUrl = 'postgres://n_api_p_demo:' + $dbPassword + '@db:5432/n_api_p_demo?sslmode=disable'
-[IO.File]::WriteAllText($envFile, "DEMO_DB_PASSWORD=$dbPassword`nDEMO_DATABASE_URL=$databaseUrl`n", [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText($envFile, "DEMO_DB_PASSWORD=$dbPassword`nDEMO_DATABASE_URL=$databaseUrl`nDEMO_OPERATOR_PROXY_CIDRS=`n", [Text.UTF8Encoding]::new($false))
 
 Push-Location $PSScriptRoot
 try {
     docker compose --env-file $envFile -f $compose up -d db
     Assert-NativeSuccess 'start database'
+    $operatorProxyCIDR = Get-LocalDemoOperatorProxyCIDR
+    [IO.File]::WriteAllText($envFile, "DEMO_DB_PASSWORD=$dbPassword`nDEMO_DATABASE_URL=$databaseUrl`nDEMO_OPERATOR_PROXY_CIDRS=$operatorProxyCIDR`n", [Text.UTF8Encoding]::new($false))
     if ($affectedServices -contains 'mock') {
         docker compose --env-file $envFile -f $compose up -d --force-recreate --no-deps mock
     } else {
@@ -249,7 +276,13 @@ try {
         Write-Host 'Demo migrations already completed; skipping migration run.'
     }
     $credentialsPath = Join-Path $credentials 'demo-credentials.txt'
-    if (-not (Test-Path $credentialsPath)) {
+    $seededAdmin = @(& docker compose --env-file $envFile -f $compose exec -T db psql -U n_api_p_demo -d n_api_p_demo -tAc "SELECT EXISTS (SELECT 1 FROM identities WHERE email = 'demo-admin@example.invalid')")
+    Assert-NativeSuccess 'check local demo seed state'
+    $demoAdminExists = ($seededAdmin -join '').Trim() -ceq 't'
+    if ($demoAdminExists -and -not (Test-Path -LiteralPath $credentialsPath -PathType Leaf)) {
+        throw 'demo credentials are missing while the synthetic administrator exists; refusing to rotate credentials'
+    }
+    if (-not $demoAdminExists) {
         docker compose --env-file $envFile -f $compose run --rm --no-deps seed
         Assert-NativeSuccess 'seed demo data'
     } else {

@@ -4,6 +4,7 @@ import { AdminAPIError, classifyAdminAPIError } from './admin-api'
 import type { AdminAPIErrorKind, AdminPortalClient, AuditMetadata, Pagination, RawAuditView } from './admin-api'
 import { ModalDialog } from './ModalDialog'
 import { advanceCursor } from './pagination'
+import { formatDateTime, t } from './i18n'
 
 type Props = { client: AdminPortalClient; onSessionExpired?: () => void }
 
@@ -88,7 +89,7 @@ export function AuditWorkspace({ client, onSessionExpired }: Props) {
       } else if (classifyAdminAPIError(failure) === 'authentication') {
         expireSession()
       } else {
-        setError('Unable to inspect this audit record.')
+        setError(t('Unable to inspect this audit record.'))
       }
     }
   }
@@ -103,7 +104,7 @@ export function AuditWorkspace({ client, onSessionExpired }: Props) {
     } catch (failure: unknown) {
       if (errorCode(failure) !== 'INVALID_CREDENTIALS' && classifyAdminAPIError(failure) === 'authentication') {
         expireSession()
-      } else setError('Reauthentication failed.')
+      } else setError(t('Reauthentication failed.'))
     }
   }
 
@@ -129,28 +130,28 @@ export function AuditWorkspace({ client, onSessionExpired }: Props) {
     setRetryNonce((current) => current + 1)
   }
 
-  if (loading) return <section className="activity-section" aria-label="Audit"><p className="loading-state">Loading audit metadata…</p></section>
+  if (loading) return <section className="activity-section" aria-label={t('Audit')}><p className="loading-state">{t('Loading audit metadata…')}</p></section>
 
   return <>
     <section className="activity-section" aria-labelledby="audit-metadata-title">
-      <div className="section-heading-row"><div><p className="section-kicker">Content-free records</p><h2 id="audit-metadata-title">Audit metadata</h2></div></div>
-      {loadErrorKind && <div className="error-state" role="alert" aria-label="Audit loading error"><p>{auditLoadErrorMessage(loadErrorKind, loadErrorScope)}</p><button className="button button-secondary button-small" type="button" onClick={() => {
+      <div className="section-heading-row"><div><p className="section-kicker">{t('Content-free records')}</p><h2 id="audit-metadata-title">{t('Audit metadata')}</h2></div></div>
+      {loadErrorKind && <div className="error-state" role="alert" aria-label={t('Audit loading error')}><p>{auditLoadErrorMessage(loadErrorKind, loadErrorScope)}</p><button className="button button-secondary button-small" type="button" onClick={() => {
         if (loadErrorKind === 'authentication' && onSessionExpired) onSessionExpired()
         else if (loadErrorScope === 'page' && pagination.next_cursor) void loadMore()
         else retryInitialLoad()
-      }}>{loadErrorKind === 'authentication' ? 'Sign in again' : 'Retry loading audits'}</button></div>}
+      }}>{loadErrorKind === 'authentication' ? t('Sign in again') : t('Retry loading audits')}</button></div>}
       {error && <p className="error-state" role="alert">{error}</p>}
-      <div className="table-wrap" tabIndex={0}><table aria-label="Audit metadata"><thead><tr><th>Created</th><th>Model</th><th>Capture</th><th>Outcome</th><th>Bytes</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>
-        {records.length ? records.map((record) => <tr key={record.id}><td className="muted-cell">{new Date(record.created_at).toLocaleString()}</td><td className="audit-model-cell">{record.model_id}</td><td>{record.capture_status}</td><td>{record.outcome}</td><td className="muted-cell">{record.observed_request_bytes} / {record.observed_response_bytes}</td><td><button className="button button-secondary button-small" type="button" onClick={() => beginInspection(record)} aria-label={`Inspect raw content for ${record.id}`}>Inspect</button></td></tr>) : <tr><td colSpan={6} className="empty-row">No audit records yet.</td></tr>}
+      <div className="table-wrap" tabIndex={0}><table aria-label={t('Audit metadata')}><thead><tr><th>{t('Created')}</th><th>{t('Model')}</th><th>{t('Capture')}</th><th>{t('Outcome')}</th><th>{t('Bytes')}</th><th><span className="sr-only">{t('Actions')}</span></th></tr></thead><tbody>
+        {records.length ? records.map((record) => <tr key={record.id}><td className="muted-cell">{formatDateTime(record.created_at)}</td><td className="audit-model-cell">{record.model_id}</td><td>{t(record.capture_status)}</td><td>{t(record.outcome)}</td><td className="muted-cell">{record.observed_request_bytes} / {record.observed_response_bytes}</td><td><button className="button button-secondary button-small" type="button" onClick={() => beginInspection(record)} aria-label={`${t('Inspect raw content for')} ${record.id}`}>{t('Inspect')}</button></td></tr>) : <tr><td colSpan={6} className="empty-row">{t('No audit records yet.')}</td></tr>}
       </tbody></table></div>
-      {pagination.has_more && <div className="pagination-actions"><button className="button button-secondary" type="button" disabled={pageLoading} onClick={() => void loadMore()}>{pageLoading ? 'Loading…' : 'Load more audits'}</button></div>}
+      {pagination.has_more && <div className="pagination-actions"><button className="button button-secondary" type="button" disabled={pageLoading} onClick={() => void loadMore()}>{pageLoading ? t('Loading…') : t('Load more audits')}</button></div>}
     </section>
 
-    {target && <ModalDialog ariaLabelledBy="inspection-title" onDismiss={() => setTarget(null)}><div className="dialog-heading"><h2 id="inspection-title">Inspect one audit record</h2></div><form className="dialog-form" onSubmit={(event) => { event.preventDefault(); void inspect() }}><label className="field-label" htmlFor="inspection-reason">Investigation reason</label><textarea id="inspection-reason" name="investigation_reason" aria-label="Investigation reason" autoComplete="off" spellCheck={true} maxLength={500} value={reason} onChange={(event) => setReason(event.target.value)} required /><div className="dialog-actions"><button className="button button-secondary" type="button" onClick={() => setTarget(null)}>Cancel</button><button className="button button-primary" type="submit" disabled={!reason.trim()}>Inspect one record</button></div></form></ModalDialog>}
+    {target && <ModalDialog ariaLabelledBy="inspection-title" onDismiss={() => setTarget(null)}><div className="dialog-heading"><h2 id="inspection-title">{t('Inspect one audit record')}</h2></div><form className="dialog-form" onSubmit={(event) => { event.preventDefault(); void inspect() }}><label className="field-label" htmlFor="inspection-reason">{t('Investigation reason')}</label><textarea id="inspection-reason" name="investigation_reason" aria-label={t('Investigation reason')} autoComplete="off" spellCheck={true} maxLength={500} value={reason} onChange={(event) => setReason(event.target.value)} required /><div className="dialog-actions"><button className="button button-secondary" type="button" onClick={() => setTarget(null)}>{t('Cancel')}</button><button className="button button-primary" type="submit" disabled={!reason.trim()}>{t('Inspect one record')}</button></div></form></ModalDialog>}
 
-    {reauthOpen && <ModalDialog ariaLabelledBy="audit-reauth-title" onDismiss={() => setReauthOpen(false)} raised><div className="dialog-heading"><h2 id="audit-reauth-title">Reauthenticate</h2></div><form className="dialog-form" onSubmit={finishReauthentication}><label className="field-label" htmlFor="audit-reauth-password">Current password</label><input id="audit-reauth-password" name="current_password" aria-label="Current password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /><div className="dialog-actions"><button className="button button-secondary" type="button" onClick={() => setReauthOpen(false)}>Cancel</button><button className="button button-primary" type="submit">Reauthenticate and continue</button></div></form></ModalDialog>}
+    {reauthOpen && <ModalDialog ariaLabelledBy="audit-reauth-title" onDismiss={() => setReauthOpen(false)} raised><div className="dialog-heading"><h2 id="audit-reauth-title">{t('Reauthenticate')}</h2></div><form className="dialog-form" onSubmit={finishReauthentication}><label className="field-label" htmlFor="audit-reauth-password">{t('Current password')}</label><input id="audit-reauth-password" name="current_password" aria-label={t('Current password')} type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /><div className="dialog-actions"><button className="button button-secondary" type="button" onClick={() => setReauthOpen(false)}>{t('Cancel')}</button><button className="button button-primary" type="submit">{t('Reauthenticate and continue')}</button></div></form></ModalDialog>}
 
-    {rawView && <ModalDialog ariaLabelledBy="raw-audit-title" className="dialog-wide raw-audit-dialog" onDismiss={closeRawView}><div className="dialog-heading"><div><p className="section-kicker">Single record</p><h2 id="raw-audit-title">Raw audit record</h2></div></div><div className="raw-audit-content"><section aria-labelledby="raw-request-title"><h3 id="raw-request-title">Request</h3><pre tabIndex={0}>{formatJSON(rawView.request)}</pre></section><section aria-labelledby="raw-response-title"><h3 id="raw-response-title">Response</h3><pre tabIndex={0}>{formatJSON(rawView.response)}</pre></section></div><div className="dialog-actions"><button className="button button-primary" type="button" onClick={closeRawView}>Close raw audit record</button></div></ModalDialog>}
+    {rawView && <ModalDialog ariaLabelledBy="raw-audit-title" className="dialog-wide raw-audit-dialog" onDismiss={closeRawView}><div className="dialog-heading"><div><p className="section-kicker">{t('Single record')}</p><h2 id="raw-audit-title">{t('Raw audit record')}</h2></div></div><div className="raw-audit-content"><section aria-labelledby="raw-request-title"><h3 id="raw-request-title">{t('Request')}</h3><pre tabIndex={0}>{formatJSON(rawView.request)}</pre></section><section aria-labelledby="raw-response-title"><h3 id="raw-response-title">{t('Response')}</h3><pre tabIndex={0}>{formatJSON(rawView.response)}</pre></section></div><div className="dialog-actions"><button className="button button-primary" type="button" onClick={closeRawView}>{t('Close raw audit record')}</button></div></ModalDialog>}
   </>
 }
 
@@ -164,11 +165,11 @@ function formatJSON(value: unknown): string {
 }
 
 function auditLoadErrorMessage(kind: AdminAPIErrorKind, scope: 'initial' | 'page'): string {
-  if (kind === 'authentication') return 'Your session has expired. Please sign in again.'
-  if (kind === 'network') return 'Unable to reach Audit. Check your connection and retry.'
-  if (kind === 'database') return 'Audit data is temporarily unavailable because audit persistence is unavailable.'
-  if (kind === 'server') return scope === 'page' ? 'More audit metadata could not be loaded because the server returned an internal error.' : 'Audit could not be loaded because the server returned an internal error.'
-  return scope === 'page' ? 'Unable to load more audit metadata.' : 'Unable to load audit metadata.'
+  if (kind === 'authentication') return t('Your session has expired. Please sign in again.')
+  if (kind === 'network') return t('Unable to reach Audit. Check your connection and retry.')
+  if (kind === 'database') return t('Audit data is temporarily unavailable because audit persistence is unavailable.')
+  if (kind === 'server') return scope === 'page' ? t('More audit metadata could not be loaded because the server returned an internal error.') : t('Audit could not be loaded because the server returned an internal error.')
+  return scope === 'page' ? t('Unable to load more audit metadata.') : t('Unable to load audit metadata.')
 }
 
 function errorCode(reason: unknown): string {

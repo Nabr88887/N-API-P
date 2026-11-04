@@ -5,17 +5,18 @@ import { AlertTriangle, CheckCircle2 } from 'lucide-react'
 import type { AdminPortalClient, HealthResponse, OperationalEvent } from './admin-api'
 import { activeCriticalFaults, faultCopy, isFaultCode, type FaultCode } from './operational-faults'
 import { advanceCursor } from './pagination'
+import { formatDateTime, t } from './i18n'
 type SafeOperationalEvent = OperationalEvent & { event_type: FaultCode; severity: 'critical' | 'recovery' }
 
 export function CriticalFaultBanners({ health }: { health: HealthResponse | null }) {
   const faults = activeCriticalFaults(health)
   if (!faults.length) return null
   return (
-    <div className="critical-fault-stack" aria-label="Critical operational faults">
+    <div className="critical-fault-stack" aria-label={t('Critical operational faults')}>
       {faults.map((fault) => (
-        <section className="critical-fault-banner" role="alert" aria-label={faultCopy[fault]} key={fault}>
+        <section className="critical-fault-banner" role="alert" aria-label={t(faultCopy[fault])} key={fault}>
           <AlertTriangle size={20} aria-hidden="true" />
-          <div><span>Critical operational fault</span><strong>{faultCopy[fault]}</strong></div>
+          <div><span>{t('Critical operational fault')}</span><strong>{t(faultCopy[fault])}</strong></div>
         </section>
       ))}
     </div>
@@ -40,7 +41,7 @@ export function OperationsWorkspace({ client }: { client: AdminPortalClient }) {
         setCursor(advanceCursor(page.pagination, cursors))
       }
     }).catch(() => {
-      if (!cancelled) setError('Unable to load operational events.')
+      if (!cancelled) setError(t('Unable to load operational events.'))
     }).finally(() => {
       if (!cancelled) setLoading(false)
     })
@@ -58,37 +59,37 @@ export function OperationsWorkspace({ client }: { client: AdminPortalClient }) {
       setCursor(nextCursor)
     } catch (failure: unknown) {
       if (failure instanceof Error && failure.message === 'INVALID_PAGINATION_CURSOR') setCursor(undefined)
-      setError('Unable to load more operational events.')
+      setError(t('Unable to load more operational events.'))
     } finally {
       setLoadingMore(false)
     }
   }
 
-  if (loading) return <section className="activity-section" aria-label="Operations"><p className="loading-state">Loading operations…</p></section>
+  if (loading) return <section className="activity-section" aria-label={t('Operations')}><p className="loading-state">{t('Loading operations…')}</p></section>
   return (
     <section className="activity-section" aria-labelledby="operations-events-title">
       <div className="section-heading-row">
-        <div><p className="section-kicker">Content-free record</p><h2 id="operations-events-title">Recent operational events</h2></div>
+        <div><p className="section-kicker">{t('Content-free record')}</p><h2 id="operations-events-title">{t('Recent operational events')}</h2></div>
       </div>
       {error && <p className="error-state" role="alert">{error}</p>}
       <div className="table-wrap" tabIndex={0}>
-        <table aria-label="Recent operational events">
-          <thead><tr><th scope="col">When</th><th scope="col">Condition</th><th scope="col">Status</th></tr></thead>
+        <table aria-label={t('Recent operational events')}>
+          <thead><tr><th scope="col">{t('When')}</th><th scope="col">{t('Condition')}</th><th scope="col">{t('Status')}</th></tr></thead>
           <tbody>
             {events.length ? events.map((event) => (
               <tr key={event.id}>
-                <td className="muted-cell">{new Date(event.occurred_at).toLocaleString()}</td>
-                <td>{faultCopy[event.event_type]}</td>
+                <td className="muted-cell">{formatDateTime(event.occurred_at)}</td>
+                <td>{t(faultCopy[event.event_type])}</td>
                 <td><span className={`operation-state operation-state-${event.severity}`}>
                   {event.severity === 'critical' ? <AlertTriangle size={14} aria-hidden="true" /> : <CheckCircle2 size={14} aria-hidden="true" />}
-                  {event.severity === 'critical' ? 'Critical' : 'Recovered'}
+                  {t(event.severity === 'critical' ? 'Critical' : 'Recovered')}
                 </span></td>
               </tr>
-            )) : <tr><td className="empty-row" colSpan={3}>No recent operational events.</td></tr>}
+            )) : <tr><td className="empty-row" colSpan={3}>{t('No recent operational events.')}</td></tr>}
           </tbody>
         </table>
       </div>
-      {cursor && <div className="pagination-actions"><button className="button button-secondary" type="button" disabled={loadingMore} onClick={() => void loadMore()}>{loadingMore ? 'Loading…' : 'Load more events'}</button></div>}
+      {cursor && <div className="pagination-actions"><button className="button button-secondary" type="button" disabled={loadingMore} onClick={() => void loadMore()}>{loadingMore ? t('Loading…') : t('Load more events')}</button></div>}
     </section>
   )
 }

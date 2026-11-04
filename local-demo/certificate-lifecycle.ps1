@@ -1,6 +1,82 @@
 $script:LocalDemoCertificateValidityDays = 2
 $script:LocalDemoCertificateRenewalWindowSeconds = 86400
 
+function ConvertTo-LocalDemoProcessArgument([string]$Argument) {
+    if ($Argument.Length -gt 0 -and $Argument -notmatch '[\s"]') {
+        return $Argument
+    }
+
+    $builder = [Text.StringBuilder]::new()
+    $null = $builder.Append([char]34)
+    $backslashes = 0
+    foreach ($character in $Argument.ToCharArray()) {
+        if ($character -eq [char]92) {
+            $backslashes++
+            continue
+        }
+        if ($character -eq [char]34) {
+            $null = $builder.Append([string]::new([char]92, 2 * $backslashes + 1)).Append([char]34)
+            $backslashes = 0
+            continue
+        }
+        if ($backslashes -gt 0) {
+            $null = $builder.Append([string]::new([char]92, $backslashes))
+            $backslashes = 0
+        }
+        $null = $builder.Append($character)
+    }
+    if ($backslashes -gt 0) {
+        $null = $builder.Append([string]::new([char]92, 2 * $backslashes))
+    }
+    $null = $builder.Append([char]34)
+    return $builder.ToString()
+}
+
+function Add-LocalDemoProcessArguments(
+    [Diagnostics.ProcessStartInfo]$StartInfo,
+    [string[]]$Arguments
+) {
+    $argumentListProperty = $StartInfo.PSObject.Properties['ArgumentList']
+    if ($null -ne $argumentListProperty -and $null -ne $argumentListProperty.Value) {
+        foreach ($argument in $Arguments) {
+            $argumentListProperty.Value.Add($argument)
+        }
+        return
+    }
+    $StartInfo.Arguments = (($Arguments | ForEach-Object { ConvertTo-LocalDemoProcessArgument $_ }) -join ' ')
+}
+
+function Invoke-LocalDemoOpenSSL(
+    [string]$OpenSSL,
+    [string[]]$Arguments
+) {
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $OpenSSL
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    Add-LocalDemoProcessArguments -StartInfo $startInfo -Arguments $Arguments
+
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    if (-not $process.Start()) {
+        throw 'OpenSSL process could not start'
+    }
+    try {
+        $standardOutput = $process.StandardOutput.ReadToEndAsync()
+        $standardError = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit(30000)) {
+            $process.Kill()
+            throw 'OpenSSL process timed out'
+        }
+        $null = $standardOutput.GetAwaiter().GetResult()
+        $null = $standardError.GetAwaiter().GetResult()
+        return $process.ExitCode
+    } finally {
+        $process.Dispose()
+    }
+}
+
 function Test-LocalDemoByteEquality([byte[]]$left, [byte[]]$right) {
     if ($left.Length -ne $right.Length) {
         return $false
@@ -136,9 +212,13 @@ function Update-LocalDemoCertificate(
     $stagedCertificate = "$CertificatePath.new.$transactionID"
     $stagedKey = "$KeyPath.new.$transactionID"
     try {
-        & $OpenSSL req -x509 -newkey rsa:2048 -nodes -days $script:LocalDemoCertificateValidityDays -subj "/CN=$CommonName" -keyout $stagedKey -out $stagedCertificate -config $ConfigPath -extensions v3_req 2>$null | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            throw "generate certificate for $ExpectedHost failed with exit code $LASTEXITCODE"
+        $opensslArguments = @(
+            'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', [string]$script:LocalDemoCertificateValidityDays,
+            '-subj', "/CN=$CommonName", '-keyout', $stagedKey, '-out', $stagedCertificate, '-config', $ConfigPath, '-extensions', 'v3_req'
+        )
+        $opensslExitCode = Invoke-LocalDemoOpenSSL -OpenSSL $OpenSSL -Arguments $opensslArguments
+        if ($opensslExitCode -ne 0) {
+            throw "generate certificate for $ExpectedHost failed with exit code $opensslExitCode"
         }
         Assert-LocalDemoCertificate -OpenSSL $OpenSSL -CertificatePath $stagedCertificate -KeyPath $stagedKey -ExpectedHost $ExpectedHost -MinimumRemainingSeconds $script:LocalDemoCertificateRenewalWindowSeconds
         Install-LocalDemoCertificatePair -OpenSSL $OpenSSL -CertificatePath $CertificatePath -KeyPath $KeyPath -StagedCertificatePath $stagedCertificate -StagedKeyPath $stagedKey -ExpectedHost $ExpectedHost -MinimumRemainingSeconds $script:LocalDemoCertificateRenewalWindowSeconds
@@ -176,13 +256,11 @@ function Assert-LocalDemoPortalTLS(
     $startInfo.RedirectStandardInput = $true
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
-    foreach ($argument in @(
+    Add-LocalDemoProcessArguments -StartInfo $startInfo -Arguments @(
         's_client', '-connect', '127.0.0.1:8443', '-servername', 'localhost',
         '-CAfile', $CertificatePath, '-verify_hostname', 'localhost',
         '-verify_return_error', '-quiet', '-ign_eof'
-    )) {
-        $startInfo.ArgumentList.Add($argument)
-    }
+    )
 
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
@@ -195,7 +273,7 @@ function Assert-LocalDemoPortalTLS(
         $process.StandardInput.Write("GET $Path HTTP/1.1`r`nHost: localhost`r`nConnection: close`r`n`r`n")
         $process.StandardInput.Close()
         if (-not $process.WaitForExit(10000)) {
-            $process.Kill($true)
+            $process.Kill()
             throw "portal TLS probe timed out for $Path"
         }
         $response = $standardOutput.GetAwaiter().GetResult()

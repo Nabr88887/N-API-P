@@ -31,19 +31,31 @@ export function createPortalClient(): PortalClient {
       const csrfToken = currentCSRFToken()
       if (csrfToken) headers.set('X-CSRF-Token', csrfToken)
     }
-    const response = await fetch(path, { ...init, headers, credentials: 'same-origin' })
+    let response: Response
+    try {
+      response = await fetch(path, { ...init, headers, credentials: 'same-origin' })
+    } catch {
+      throw new PortalAPIError('PORTAL_UNAVAILABLE')
+    }
     rememberCSRFToken(response.headers.get('X-CSRF-Token'))
     if (!response.ok) {
       let code = 'INTERNAL_ERROR'
+      let parsedError = false
       try {
         code = (await response.json() as { error?: { code?: string } }).error?.code ?? code
+        parsedError = true
       } catch {
         // Keep the public fallback independent of transport details.
       }
+      if (!parsedError) code = 'PORTAL_UNAVAILABLE'
       throw new PortalAPIError(code)
     }
     if (response.status === 204) return undefined as T
-    return response.json() as Promise<T>
+    try {
+      return await response.json() as T
+    } catch {
+      throw new PortalAPIError('PORTAL_UNAVAILABLE')
+    }
   }
 
   return {

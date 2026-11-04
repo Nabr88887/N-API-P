@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { cleanup } from '@testing-library/react'
 
 import { Portal, type PortalClient } from './Portal'
+import { PortalAPIError } from './portal-api'
 
 afterEach(() => {
   cleanup()
@@ -40,6 +41,56 @@ it('shows anonymous recovery modes and reboots the session after login', async (
 
   await waitFor(() => expect(client.login).toHaveBeenCalledWith('employee@example.internal', 'synthetic-password'))
   expect(await screen.findByText('employee@example.internal')).toBeInTheDocument()
+})
+
+it('disables the sign-in form while authentication is pending', async () => {
+  const user = userEvent.setup()
+  let resolveLogin!: () => void
+  const client = portalClient()
+  client.me = vi.fn().mockRejectedValue(new Error('AUTHENTICATION_REQUIRED'))
+  client.login = vi.fn(() => new Promise<void>((resolve) => { resolveLogin = resolve }))
+  render(<Portal client={client} />)
+
+  await screen.findByRole('heading', { name: 'Sign in' })
+  await user.type(screen.getByLabelText('Company email'), 'employee@example.internal')
+  await user.type(screen.getByLabelText('Password'), 'synthetic-password')
+  const submit = screen.getByRole('button', { name: 'Continue' })
+  await user.click(submit)
+
+  expect(screen.getByRole('button', { name: 'Signing in…' })).toBeDisabled()
+  expect(screen.getByLabelText('Company email')).toBeDisabled()
+  resolveLogin()
+  await waitFor(() => expect(client.login).toHaveBeenCalledOnce())
+})
+
+it('explains when the sign-in service is unavailable', async () => {
+  const user = userEvent.setup()
+  const client = portalClient()
+  client.me = vi.fn().mockRejectedValue(new Error('AUTHENTICATION_REQUIRED'))
+  client.login = vi.fn().mockRejectedValue(new PortalAPIError('PORTAL_UNAVAILABLE'))
+  render(<Portal client={client} />)
+
+  await screen.findByRole('heading', { name: 'Sign in' })
+  await user.type(screen.getByLabelText('Company email'), 'employee@example.internal')
+  await user.type(screen.getByLabelText('Password'), 'synthetic-password')
+  await user.click(screen.getByRole('button', { name: 'Continue' }))
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('The sign-in service is unavailable. Check that the application server is running.')
+})
+
+it('keeps rejected credentials on the generic sign-in error', async () => {
+  const user = userEvent.setup()
+  const client = portalClient()
+  client.me = vi.fn().mockRejectedValue(new Error('AUTHENTICATION_REQUIRED'))
+  client.login = vi.fn().mockRejectedValue(new PortalAPIError('INVALID_CREDENTIALS'))
+  render(<Portal client={client} />)
+
+  await screen.findByRole('heading', { name: 'Sign in' })
+  await user.type(screen.getByLabelText('Company email'), 'employee@example.internal')
+  await user.type(screen.getByLabelText('Password'), 'synthetic-password')
+  await user.click(screen.getByRole('button', { name: 'Continue' }))
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('Unable to sign in.')
 })
 
 it('returns an expired admin session to sign-in and restores audit metadata after login', async () => {

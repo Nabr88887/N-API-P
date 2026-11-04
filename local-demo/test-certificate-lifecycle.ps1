@@ -20,6 +20,11 @@ function Get-FileDigest([string]$path) {
     return (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
 }
 
+Assert-True ((ConvertTo-LocalDemoProcessArgument 'plain') -ceq 'plain') 'plain process arguments were quoted unexpectedly'
+Assert-True ((ConvertTo-LocalDemoProcessArgument 'path with spaces') -ceq '"path with spaces"') 'spaces were not quoted for Windows PowerShell'
+Assert-True ((ConvertTo-LocalDemoProcessArgument 'path with spaces\') -ceq '"path with spaces\\"') 'a trailing backslash was not escaped before the closing quote'
+Assert-True ((ConvertTo-LocalDemoProcessArgument '') -ceq '""') 'an empty process argument was not preserved'
+
 function New-TestCertificate(
     [string]$name,
     [string]$commonName,
@@ -34,8 +39,12 @@ function New-TestCertificate(
         "[req]`ndistinguished_name=req_dn`nx509_extensions=v3_req`n[req_dn]`n[v3_req]`nsubjectAltName=$subjectAlternativeName`nbasicConstraints=critical,CA:TRUE`n",
         [Text.UTF8Encoding]::new($false)
     )
-    & $openssl req -x509 -newkey rsa:2048 -nodes -days $validDays -subj "/CN=$commonName" -keyout $key -out $certificate -config $config -extensions v3_req 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) {
+    $opensslArguments = @(
+        'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', [string]$validDays,
+        '-subj', "/CN=$commonName", '-keyout', $key, '-out', $certificate, '-config', $config, '-extensions', 'v3_req'
+    )
+    $opensslExitCode = Invoke-LocalDemoOpenSSL -OpenSSL $openssl -Arguments $opensslArguments
+    if ($opensslExitCode -ne 0) {
         throw "generate test certificate $name failed"
     }
     return @{ Certificate = $certificate; Key = $key; Config = $config }

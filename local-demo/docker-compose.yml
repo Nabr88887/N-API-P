@@ -92,6 +92,7 @@ services:
       N_API_P_AUDIT_KEY_FILE: /run/secrets/audit-master-key
       N_API_P_LISTEN_ADDRESS: :8080
       N_API_P_PORTAL_ORIGIN: https://localhost:8443
+      N_API_P_OPERATOR_PROXY_CIDRS: ${DEMO_OPERATOR_PROXY_CIDRS}
       SSL_CERT_FILE: /run/demo-tls/ca-certificates.crt
     volumes:
       - demo-secrets:/run/secrets:ro

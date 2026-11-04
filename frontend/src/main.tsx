@@ -3,6 +3,10 @@ import { createRoot } from 'react-dom/client'
 
 import { Portal } from './Portal'
 import { createPortalClient } from './portal-api'
+import { setLocale } from './i18n'
+
+setLocale('zh-CN')
+document.documentElement.lang = 'zh-CN'
 
 const rootElement = document.getElementById('root')
 if (rootElement === null) {

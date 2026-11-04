@@ -17,12 +17,17 @@ import type {
   ServiceAccount,
   Team,
 } from '../admin-api'
+import { setLocale } from '../i18n'
 
 const now = '2026-08-14T09:00:00Z'
-const roleParam = new URLSearchParams(window.location.search).get('role')
+const query = new URLSearchParams(window.location.search)
+const roleParam = query.get('role')
 const role: Role = roleParam === 'employee' || roleParam === 'team_administrator' ? roleParam : 'system_administrator'
-const fault = new URLSearchParams(window.location.search).get('fault')
-const emptyTeams = new URLSearchParams(window.location.search).get('teams') === 'empty'
+const fault = query.get('fault')
+const emptyTeams = query.get('teams') === 'empty'
+const locale = query.get('locale') === 'zh-CN' ? 'zh-CN' : 'en'
+setLocale(locale)
+document.documentElement.lang = locale
 
 const personalKey: PersonalKey = {
   id: 'personal-key-1',

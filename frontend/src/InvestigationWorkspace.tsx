@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { AdminAPIError, type AdminPortalClient, type InvestigationCase, type InvestigationDisposition, type InvestigationRawView, type InvestigationCandidate, type Pagination } from './admin-api'
 import { ModalDialog } from './ModalDialog'
 import { advanceCursor } from './pagination'
+import { formatDateTime, t } from './i18n'
 
 export function InvestigationWorkspace({ client }: { client: AdminPortalClient }) {
   const [cases, setCases] = useState<InvestigationCase[]>([])
@@ -44,7 +45,7 @@ export function InvestigationWorkspace({ client }: { client: AdminPortalClient }
       setCasePagination({ ...page.pagination, next_cursor: nextCursor })
       setError('')
     } catch {
-      if (requestID === caseLoadRequest.current) setError('Unable to load investigation cases.')
+      if (requestID === caseLoadRequest.current) setError(t('Unable to load investigation cases.'))
     }
   }, [client])
   useEffect(() => { const timer = window.setTimeout(() => { void loadCases() }, 0); return () => window.clearTimeout(timer) }, [loadCases])
@@ -85,7 +86,7 @@ export function InvestigationWorkspace({ client }: { client: AdminPortalClient }
       if (detailRequestID !== caseDetailRequest.current) return
       setCandidates(page.data); setError('')
     } catch {
-      if (detailRequestID === caseDetailRequest.current) setError('Unable to open or authorize this investigation case.')
+      if (detailRequestID === caseDetailRequest.current) setError(t('Unable to open or authorize this investigation case.'))
     }
   }
   async function loadMoreCases() {
@@ -99,7 +100,7 @@ export function InvestigationWorkspace({ client }: { client: AdminPortalClient }
       setCasePagination({ ...page.pagination, next_cursor: nextCursor })
     } catch (failure: unknown) {
       if (failure instanceof Error && failure.message === 'INVALID_PAGINATION_CURSOR') setCasePagination({ has_more: false })
-      setError('Unable to load more investigation cases.')
+      setError(t('Unable to load more investigation cases.'))
     } finally {
       setCasePageLoading(false)
     }
@@ -115,7 +116,7 @@ export function InvestigationWorkspace({ client }: { client: AdminPortalClient }
     }
     try { await action(); if (requestID === grantRequest.current) setError('') } catch (failure: unknown) {
       if (requestID !== grantRequest.current) return
-      if (!deferForReauthentication(failure, action)) setError('Unable to renew access to this investigation case.')
+      if (!deferForReauthentication(failure, action)) setError(t('Unable to renew access to this investigation case.'))
     }
   }
   async function inspect(candidate: InvestigationCandidate) {
@@ -127,7 +128,7 @@ export function InvestigationWorkspace({ client }: { client: AdminPortalClient }
       if (requestID !== inspectRequest.current) return
       setView(result); setError('')
     } catch {
-      if (requestID === inspectRequest.current) setError('Unable to view this audit record.')
+      if (requestID === inspectRequest.current) setError(t('Unable to view this audit record.'))
     }
   }
   async function closeCase() {
@@ -140,7 +141,7 @@ export function InvestigationWorkspace({ client }: { client: AdminPortalClient }
       setSelected(closed); setCases((current) => current.map((item) => item.id === closed.id ? closed : item)); setView(null); setGrantExpiresAt(''); setNote(''); setCloseConfirmed(false)
     }
     try { await action(); setError('') } catch (failure: unknown) {
-      if (!deferForReauthentication(failure, action)) setError('Unable to close this case.')
+      if (!deferForReauthentication(failure, action)) setError(t('Unable to close this case.'))
     }
   }
 
@@ -167,7 +168,7 @@ export function InvestigationWorkspace({ client }: { client: AdminPortalClient }
     try {
       await client.reauthenticate(reauthPassword)
     } catch {
-      if (pending.requestID === reauthenticationRequest.current) setError('Reauthentication failed.')
+      if (pending.requestID === reauthenticationRequest.current) setError(t('Reauthentication failed.'))
       return
     }
     if (pending.requestID !== reauthenticationRequest.current) return
@@ -178,7 +179,7 @@ export function InvestigationWorkspace({ client }: { client: AdminPortalClient }
       await pending.run()
       if (pending.requestID === reauthenticationRequest.current) setError('')
     } catch {
-      if (pending.requestID === reauthenticationRequest.current) setError('The operation failed after reauthentication.')
+      if (pending.requestID === reauthenticationRequest.current) setError(t('The operation failed after reauthentication.'))
     }
   }
 
@@ -190,27 +191,27 @@ export function InvestigationWorkspace({ client }: { client: AdminPortalClient }
 
   function investigationErrorMessage(failure: unknown, fallback: string): string {
     switch (errorCode(failure)) {
-      case 'INVESTIGATION_SCOPE_TOO_BROAD': return 'More than 100 retained audit records matched this scope; narrow the time range.'
-      case 'INVESTIGATION_NO_CANDIDATES': return 'No retained audit records matched this employee and time range.'
-      default: return fallback
+      case 'INVESTIGATION_SCOPE_TOO_BROAD': return t('More than 100 retained audit records matched this scope; narrow the time range.')
+      case 'INVESTIGATION_NO_CANDIDATES': return t('No retained audit records matched this employee and time range.')
+      default: return t(fallback)
     }
   }
 
   return <section className="activity-section" aria-labelledby="investigations-title">
-    <div className="section-heading-row"><div><p className="section-kicker">Bounded review</p><h2 id="investigations-title">Investigations</h2></div></div>
+    <div className="section-heading-row"><div><p className="section-kicker">{t('Bounded review')}</p><h2 id="investigations-title">{t('Investigations')}</h2></div></div>
     {error && <p className="error-state" role="alert">{error}</p>}
     <div className="control-grid investigation-create-form">
-      <label className="field-label" htmlFor="investigation-subject">Employee identity ID</label><input id="investigation-subject" value={subject} onChange={(event) => setSubject(event.target.value)} />
-      <label className="field-label" htmlFor="investigation-concern">Policy concern</label><input id="investigation-concern" value={concern} onChange={(event) => setConcern(event.target.value)} maxLength={500} />
-      <label className="field-label" htmlFor="investigation-reason">Investigation reason</label><input id="investigation-reason" value={reason} onChange={(event) => setReason(event.target.value)} maxLength={500} />
-      <label className="field-label" htmlFor="investigation-start">Start</label><input id="investigation-start" type="datetime-local" value={start} onChange={(event) => setStart(event.target.value)} />
-      <label className="field-label" htmlFor="investigation-end">End</label><input id="investigation-end" type="datetime-local" value={end} onChange={(event) => setEnd(event.target.value)} />
-      <label className="field-label" htmlFor="investigation-create-confirmed">I confirm this investigation scope</label><input id="investigation-create-confirmed" type="checkbox" checked={createConfirmed} onChange={(event) => setCreateConfirmed(event.target.checked)} />
-      <button className="button button-primary" type="button" disabled={!createConfirmed} onClick={() => void createCase()}>Create investigation</button>
+      <label className="field-label" htmlFor="investigation-subject">{t('Employee identity ID')}</label><input id="investigation-subject" value={subject} onChange={(event) => setSubject(event.target.value)} />
+      <label className="field-label" htmlFor="investigation-concern">{t('Policy concern')}</label><input id="investigation-concern" value={concern} onChange={(event) => setConcern(event.target.value)} maxLength={500} />
+      <label className="field-label" htmlFor="investigation-reason">{t('Investigation reason')}</label><input id="investigation-reason" value={reason} onChange={(event) => setReason(event.target.value)} maxLength={500} />
+      <label className="field-label" htmlFor="investigation-start">{t('Start')}</label><input id="investigation-start" type="datetime-local" value={start} onChange={(event) => setStart(event.target.value)} />
+      <label className="field-label" htmlFor="investigation-end">{t('End')}</label><input id="investigation-end" type="datetime-local" value={end} onChange={(event) => setEnd(event.target.value)} />
+      <label className="field-label" htmlFor="investigation-create-confirmed">{t('I confirm this investigation scope')}</label><input id="investigation-create-confirmed" type="checkbox" checked={createConfirmed} onChange={(event) => setCreateConfirmed(event.target.checked)} />
+      <button className="button button-primary" type="button" disabled={!createConfirmed} onClick={() => void createCase()}>{t('Create investigation')}</button>
     </div>
-    <div className="table-wrap" tabIndex={0}><table aria-label="Investigation cases"><thead><tr><th>Subject</th><th>Concern</th><th>Range</th><th>Status</th><th /></tr></thead><tbody>{cases.length ? cases.map((item) => <tr key={item.id}><td>{item.subject_identity_id}</td><td>{item.policy_concern}</td><td>{new Date(item.start_at).toLocaleString()} to {new Date(item.end_at).toLocaleString()}</td><td>{item.status}</td><td><button className="button button-secondary button-small" type="button" onClick={() => void openCase(item)}>Open case</button></td></tr>) : <tr><td colSpan={5} className="empty-row">No investigation cases.</td></tr>}</tbody></table></div>
-    {casePagination.next_cursor && <div className="pagination-actions"><button className="button button-secondary" type="button" disabled={casePageLoading} onClick={() => void loadMoreCases()}>{casePageLoading ? 'Loading…' : 'Load more investigation cases'}</button></div>}
-    {selected && <div className="investigation-detail"><div className="section-heading-row"><div><p className="section-kicker">Immutable candidate snapshot</p><h3>Case {selected.id}</h3>{grantExpiresAt && selected.status === 'open' && <p>Access expires {new Date(grantExpiresAt).toLocaleString()}</p>}</div>{selected.status === 'open' && client.issueInvestigationGrant && <button className="button button-secondary button-small" type="button" onClick={() => void renewGrant()}>{grantExpiresAt ? 'Renew access' : 'Authorize access'}</button>}</div><div className="table-wrap" tabIndex={0}><table aria-label="Investigation candidates"><thead><tr><th>Audit ID</th><th>Capture</th><th>Expires</th><th /></tr></thead><tbody>{candidates.map((candidate) => <tr key={candidate.audit_id}><td>{candidate.audit_id}</td><td>{candidate.capture_status}</td><td>{new Date(candidate.expires_at).toLocaleString()}</td><td><button className="button button-secondary button-small" type="button" disabled={selected.status !== 'open' || !grantExpiresAt} onClick={() => void inspect(candidate)}>View one record</button></td></tr>)}</tbody></table></div>{view && <div className="investigation-view"><h3>Record {view.audit_id}</h3><p>Request: {view.request.status}</p><pre>{view.request.json ? JSON.stringify(view.request.json, null, 2) : view.request.fragment ?? 'Unavailable'}</pre><p>Response: {view.response.status}</p><pre>{view.response.json ? JSON.stringify(view.response.json, null, 2) : view.response.fragment ?? 'Unavailable'}</pre></div>}{selected.status === 'open' && <div className="control-grid"><label className="field-label" htmlFor="investigation-disposition">Disposition</label><select id="investigation-disposition" value={disposition} onChange={(event) => setDisposition(event.target.value as InvestigationDisposition)}><option value="confirmed_violation">Confirmed violation</option><option value="no_violation">No violation</option><option value="inconclusive">Inconclusive</option></select><label className="field-label" htmlFor="investigation-note">Closure note</label><textarea id="investigation-note" maxLength={500} value={note} onChange={(event) => setNote(event.target.value)} /><label className="field-label" htmlFor="investigation-close-confirmed">I confirm this case closure</label><input id="investigation-close-confirmed" type="checkbox" checked={closeConfirmed} onChange={(event) => setCloseConfirmed(event.target.checked)} /><button className="button button-danger" type="button" disabled={!closeConfirmed} onClick={() => void closeCase()}>Close case</button></div>}</div>}
-    {reauthOpen && <ModalDialog ariaLabelledBy="investigation-reauth-title" onDismiss={dismissReauthentication} raised><div className="dialog-heading"><h2 id="investigation-reauth-title">Reauthenticate</h2></div><form className="dialog-form" onSubmit={(event) => void finishReauthentication(event)}><label className="field-label" htmlFor="investigation-reauth-password">Current password</label><input id="investigation-reauth-password" aria-label="Current password" type="password" autoComplete="current-password" value={reauthPassword} onChange={(event) => setReauthPassword(event.target.value)} required /><div className="dialog-actions"><button className="button button-secondary" type="button" onClick={dismissReauthentication}>Cancel</button><button className="button button-primary" type="submit">Reauthenticate and continue</button></div></form></ModalDialog>}
+    <div className="table-wrap" tabIndex={0}><table aria-label={t('Investigation cases')}><thead><tr><th>{t('Subject')}</th><th>{t('Concern')}</th><th>{t('Range')}</th><th>{t('Status')}</th><th /></tr></thead><tbody>{cases.length ? cases.map((item) => <tr key={item.id}><td>{item.subject_identity_id}</td><td>{item.policy_concern}</td><td>{formatDateTime(item.start_at)} {t('to')} {formatDateTime(item.end_at)}</td><td>{t(item.status)}</td><td><button className="button button-secondary button-small" type="button" onClick={() => void openCase(item)}>{t('Open case')}</button></td></tr>) : <tr><td colSpan={5} className="empty-row">{t('No investigation cases.')}</td></tr>}</tbody></table></div>
+    {casePagination.next_cursor && <div className="pagination-actions"><button className="button button-secondary" type="button" disabled={casePageLoading} onClick={() => void loadMoreCases()}>{casePageLoading ? t('Loading…') : t('Load more investigation cases')}</button></div>}
+    {selected && <div className="investigation-detail"><div className="section-heading-row"><div><p className="section-kicker">{t('Immutable candidate snapshot')}</p><h3>{t('Case {id}', { id: selected.id })}</h3>{grantExpiresAt && selected.status === 'open' && <p>{t('Access expires {date}', { date: formatDateTime(grantExpiresAt) })}</p>}</div>{selected.status === 'open' && client.issueInvestigationGrant && <button className="button button-secondary button-small" type="button" onClick={() => void renewGrant()}>{grantExpiresAt ? t('Renew access') : t('Authorize access')}</button>}</div><div className="table-wrap" tabIndex={0}><table aria-label={t('Investigation candidates')}><thead><tr><th>{t('Audit ID')}</th><th>{t('Capture')}</th><th>{t('Expires')}</th><th /></tr></thead><tbody>{candidates.map((candidate) => <tr key={candidate.audit_id}><td>{candidate.audit_id}</td><td>{t(candidate.capture_status)}</td><td>{formatDateTime(candidate.expires_at)}</td><td><button className="button button-secondary button-small" type="button" disabled={selected.status !== 'open' || !grantExpiresAt} onClick={() => void inspect(candidate)}>{t('View one record')}</button></td></tr>)}</tbody></table></div>{view && <div className="investigation-view"><h3>{t('Record {id}', { id: view.audit_id })}</h3><p>{t('Request')}: {t(view.request.status)}</p><pre>{view.request.json ? JSON.stringify(view.request.json, null, 2) : view.request.fragment ?? t('Unavailable')}</pre><p>{t('Response')}: {t(view.response.status)}</p><pre>{view.response.json ? JSON.stringify(view.response.json, null, 2) : view.response.fragment ?? t('Unavailable')}</pre></div>}{selected.status === 'open' && <div className="control-grid"><label className="field-label" htmlFor="investigation-disposition">{t('Disposition')}</label><select id="investigation-disposition" value={disposition} onChange={(event) => setDisposition(event.target.value as InvestigationDisposition)}><option value="confirmed_violation">{t('Confirmed violation')}</option><option value="no_violation">{t('No violation')}</option><option value="inconclusive">{t('Inconclusive')}</option></select><label className="field-label" htmlFor="investigation-note">{t('Closure note')}</label><textarea id="investigation-note" maxLength={500} value={note} onChange={(event) => setNote(event.target.value)} /><label className="field-label" htmlFor="investigation-close-confirmed">{t('I confirm this case closure')}</label><input id="investigation-close-confirmed" type="checkbox" checked={closeConfirmed} onChange={(event) => setCloseConfirmed(event.target.checked)} /><button className="button button-danger" type="button" disabled={!closeConfirmed} onClick={() => void closeCase()}>{t('Close case')}</button></div>}</div>}
+    {reauthOpen && <ModalDialog ariaLabelledBy="investigation-reauth-title" onDismiss={dismissReauthentication} raised><div className="dialog-heading"><h2 id="investigation-reauth-title">{t('Reauthenticate')}</h2></div><form className="dialog-form" onSubmit={(event) => void finishReauthentication(event)}><label className="field-label" htmlFor="investigation-reauth-password">{t('Current password')}</label><input id="investigation-reauth-password" aria-label={t('Current password')} type="password" autoComplete="current-password" value={reauthPassword} onChange={(event) => setReauthPassword(event.target.value)} required /><div className="dialog-actions"><button className="button button-secondary" type="button" onClick={dismissReauthentication}>{t('Cancel')}</button><button className="button button-primary" type="submit">{t('Reauthenticate and continue')}</button></div></form></ModalDialog>}
   </section>
 }
