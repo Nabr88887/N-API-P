@@ -125,6 +125,24 @@ Remove-Item -Recurse -Force .\local-demo\.runtime
 账号密码使用不回显输入传给 `/n-api-p-bootstrap`，不要出现在命令行参数、
 Shell 历史、日志或聊天中。具体约束以部署方审核过的内部 Runbook 为准。
 
+### 4.1 NewAPI 上游令牌类型
+
+N-API-P 需要的是 NewAPI `令牌`管理中的项目 API token，不是账户安全页显示的
+“访问令牌”。两者不能互换：
+
+- 账户访问令牌对应 `/api/user/token`，用于账户安全操作；不要放入
+  `N_API_P_NEWAPI_TOKEN_FILE`。
+- 项目 API token 对应 `/api/token/`，需要核验 owner、`model_limits`、有限配额、
+  状态、到期时间和撤销路径；完整 key 只进入服务端受保护的 root-owned `0400`
+  文件，不进入聊天、日志、仓库或截图。
+- 先完成无凭据的 readiness，再创建或识别唯一项目 API token。若检查失败，停止并
+  修复前置条件，不创建替代 token。
+
+NewAPI 的正式版本、管理员认证方式和 token contract 必须以已安装 revision 的
+官方源码和批准的 operator-only 检查为准，不要根据页面上的泛称猜测令牌类型。
+rc.5 当前验收要求 N-API-P 到配置的内部 proxy 使用证书校验 HTTPS；proxy 到
+stock NewAPI 的 HTTP 仅可位于已证明私有且未发布的 Docker bridge 网络上。
+
 ## 5. 日常管理
 
 登录管理门户后，系统管理员可以根据当前授权范围执行以下工作：
