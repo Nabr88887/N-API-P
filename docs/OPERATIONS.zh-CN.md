@@ -202,5 +202,6 @@ stock NewAPI 的 HTTP 仅可位于已证明私有且未发布的 Docker bridge �
 ## 8. 相关文件
 
 - [项目中文说明](../README.zh-CN.md)
+- [小组试点与回滚检查清单](PILOT-AND-ROLLBACK-CHECKLIST.zh-CN.md)
 - [Nginx 配置示例](../deploy/nginx/n-api-p.conf.example)
 - [环境变量占位符](../deploy/n-api-p.env.example)
