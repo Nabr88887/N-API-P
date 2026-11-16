@@ -22,12 +22,17 @@ N-API-P rc.5 已完成恢复到可部署前的准备：
 
 正式部署本身等待用户最终确认；模型链路还等待两个运维前置：
 
-1. 现有挂载的新上游项目 token 对 `/v1/models` 返回 `upstream_auth_rejected`。
-   必须由运维重新签发一个有明确模型范围、有限额度和到期时间的新 token，
-   只写入 root-owned `0400` carrier。不要在聊天或仓库中输出值。
+1. 现有挂载的 token ID 2 已于 2026-11-14 10:00（Asia/Shanghai）原生过期；
+   2026-11-16 的新鲜远端 preflight 在通过其余全部检查后，仅以
+   `upstream_auth_rejected` 停止。已准备一次性 token 轮换包：创建限定
+   `deepseek-v4-flash`、额度不超过 10 CNY、有效期不超过 96 小时的 token，
+   先验证 `/v1/models`，再原子替换 root-owned `0400` carrier；失败会撤销新
+   token 并恢复旧载体。执行时只需在本地隐藏提示中输入一次 NewAPI 管理员
+   凭据，凭据和 token 不会输出或落盘。
 2. 本地 DPAPI 恢复密钥载体已通过回读校验，但仍需复制到运维控制的离线介质：
    `tmp/predeployment-recovery-carrier-20261116/metadata-backup-v1.key.dpapi`
-   及同目录 content-free manifest。
+   及同目录 content-free manifest。当前主机只检测到固定的 C/D/E 卷和空
+   CD-ROM，没有可移动文件系统，因此仍需人工插入运维控制的离线介质。
 
 在上述两项完成前，不得把 Gate G 标为通过，也不得开放员工入口或试点流量。
 
@@ -44,6 +49,9 @@ N-API-P rc.5 已完成恢复到可部署前的准备：
   lint/test 工具链，自动全修会引入 breaking 更新，未在发布候选上改依赖。
 - rc.5 OCI archive：16,618,496 bytes，11/11 blob 通过，index、平台、版本、
   revision、healthcheck、运行用户和 stop signal 均匹配。
+- token 轮换包：本机 9/9 通过（跳过 1 个 Linux-only 测试）；
+  `python:3.12-slim` 内 9/9 通过，包括目录相对原子替换。
+- 部署脚本回归：4/4 通过。
 
 ## 固定身份
 
@@ -61,15 +69,17 @@ N-API-P rc.5 已完成恢复到可部署前的准备：
 1. 读取 `AGENTS.md`、`.codex/PROJECT_GOAL.md`、`.codex/STATUS.md`、
    `.codex/PROJECT_PLAN.md`、`.codex/handoff.md` 和本文件。
 2. 核对 Git、候选镜像、恢复证据和所有 CONSUMED 包，不重放旧包。
-3. 等待并核对新 token 与离线恢复载体确认。
-4. 在服务器只运行：
+3. 先运行 token 轮换包本地 preflight，再在本地隐藏提示中输入 NewAPI 管理员
+   凭据并执行一次；核对 receipt 中的 token 元数据、模型发现和 carrier 权限。
+4. 插入并核对运维控制的离线介质，复制 DPAPI carrier 与 manifest，再回读哈希。
+5. 在服务器只运行：
    `.codex/deploy_candidate_rc5_20261116.py preflight`。
-5. 只有 preflight 全部通过并获得用户最终正式部署确认后，才运行 `deploy`。
-6. `deploy` 成功后再运行 `verify`，确认 companions 未变化、候选健康、
+6. 只有 preflight 全部通过并获得用户最终正式部署确认后，才运行 `deploy`。
+7. `deploy` 成功后再运行 `verify`，确认 companions 未变化、候选健康、
    DB version 9、代理仍仅回环监听。
-7. 使用新 token 做 Gate G：models、非流式 Chat、SSE、tool call、usage、
+8. 使用新 token 做 Gate G：models、非流式 Chat、SSE、tool call、usage、
    加密 raw capture、审计完整性、内容免费日志/metrics。
-8. Gate H 的参与者、时间窗和内部入口仍是独立决定。
+9. Gate H 的参与者、时间窗和内部入口仍是独立决定。
 
 ## 禁止事项
 
@@ -87,6 +97,11 @@ N-API-P rc.5 已完成恢复到可部署前的准备：
 - 当前计划：`.codex/PROJECT_PLAN.md`
 - 最终部署包：`.codex/PREDEPLOYMENT-FINAL-DEPLOYMENT-PACKAGE-2026-11-16.md`
 - 部署脚本：`.codex/deploy_candidate_rc5_20261116.py`
+- token 轮换计划：`.codex/PREDEPLOYMENT-TOKEN-ROTATION-V1-2026-11-16.md`
+- token 轮换 runner：
+  `.codex/predeployment_token_rotation_v1_once_20261116.py`
+- 新鲜部署 preflight：
+  `.codex/predeployment_final_deployment_preflight_v2_20261116.result.json`
 - 恢复点计划：`.codex/PREDEPLOYMENT-METADATA-BACKUP-V3-2026-11-16.md`
 - 实际恢复演练：`.codex/PREDEPLOYMENT-ACTUAL-RESTORE-DRILL-V6-2026-11-16.md`
 - 权威批准与消费状态：`.codex/APPROVALS.md`
