@@ -1,5 +1,10 @@
 # 2026-11-16 交接：正式部署前剩余工作
 
+> 2026-11-18 更新：本文件保留为历史交接。当前有效状态请以
+> [`NEXT-SESSION-HANDOFF-2026-11-18.md`](NEXT-SESSION-HANDOFF-2026-11-18.md)
+> 和 `.codex/handoff.md` 为准。下方部署脚本哈希的旧记录少了一个十六进制
+> 字符，已按实际文件修正。
+
 ## 当前结论
 
 N-API-P rc.5 已完成恢复到可部署前的准备：
@@ -107,7 +112,7 @@ App-only 部署所需的远端只读 preflight 已于 2026-11-16 新鲜通过，
 - 最终部署包：`.codex/PREDEPLOYMENT-FINAL-DEPLOYMENT-PACKAGE-2026-11-16.md`
 - 部署脚本：`.codex/deploy_candidate_rc5_20261116.py`
 - 部署脚本 SHA-256：
-  `b524b1d684dd9f8a91e60a1cb39c5cddd8d8a645792a45cc7bc9503a380b99e`
+  `453fae6cef51446efe0c3bc6c3fa2c7257309cb938dc10f11ab096f5cbae33c5`
 - token 绑定修正计划：`.codex/PREDEPLOYMENT-TOKEN-ROTATION-V4-2026-11-16.md`
 - token 绑定修正 runner：
   `.codex/predeployment_token_rotation_v4_once_20261116.py`
