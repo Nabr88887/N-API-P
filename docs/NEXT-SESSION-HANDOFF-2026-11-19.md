@@ -105,9 +105,9 @@
 
 ## 工作区提醒
 
-tracked worktree 中存在与本发布任务无关的 investigation 功能改动；rc.7 镜像
-绑定 source `c8f683a`，不能把后续未审查 worktree 改动包装成 rc.7。新会话必须
-保留这些改动，单独审查，不擅自回滚。
+暂停时 tracked worktree 已清理；仅剩用户未跟踪的 `prompts/`。rc.7 镜像绑定
+source `c8f683a`。新会话不要提交 `prompts/`，也不要把它或后续未审查改动包装
+成 rc.7。
 
 ## 禁止事项
 
