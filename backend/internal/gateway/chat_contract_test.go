@@ -83,6 +83,30 @@ func TestDecodeChatCompletionRequestAcceptsTypedToolContract(t *testing.T) {
 	}
 }
 
+func TestDecodeChatCompletionRequestAcceptsTypedThinkingControl(t *testing.T) {
+	for _, mode := range []string{"enabled", "disabled"} {
+		body := []byte(`{"model":"deepseek-flash","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"` + mode + `"}}`)
+		request, err := DecodeChatCompletionRequest(body)
+		if err != nil {
+			t.Fatalf("thinking mode %q: DecodeChatCompletionRequest() error = %v", mode, err)
+		}
+		if request.Thinking == nil || request.Thinking.Type != mode {
+			t.Fatalf("thinking mode %q: request.Thinking = %+v", mode, request.Thinking)
+		}
+	}
+}
+
+func TestDecodeChatCompletionRequestRejectsMalformedThinkingControl(t *testing.T) {
+	for _, body := range []string{
+		`{"model":"deepseek-flash","messages":[{"role":"user","content":"hi"}],"thinking":{}}`,
+		`{"model":"deepseek-flash","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"always"}}`,
+		`{"model":"deepseek-flash","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled","future":true}}`,
+	} {
+		_, err := DecodeChatCompletionRequest([]byte(body))
+		assertContractError(t, err)
+	}
+}
+
 func TestDecodeChatCompletionRequestAcceptsAllToolChoices(t *testing.T) {
 	for _, choice := range []string{`"none"`, `"auto"`, `"required"`, `{"type":"function","function":{"name":"lookup"}}`} {
 		body := `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"tool_choice":` + choice + `}`

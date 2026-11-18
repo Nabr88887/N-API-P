@@ -112,6 +112,10 @@ type ToolChoiceFunction struct {
 	Name string `json:"name"`
 }
 
+type ThinkingControl struct {
+	Type string `json:"type"`
+}
+
 func (tool *ChatTool) UnmarshalJSON(data []byte) error {
 	var decoded struct {
 		Type     string                 `json:"type"`
@@ -279,24 +283,25 @@ func (biases *LogitBias) UnmarshalJSON(data []byte) error {
 }
 
 type ChatCompletionRequest struct {
-	Model               string          `json:"model"`
-	Messages            []ChatMessage   `json:"messages"`
-	Stream              bool            `json:"stream,omitempty"`
-	StreamOptions       *StreamOptions  `json:"stream_options,omitempty"`
-	Temperature         *float64        `json:"temperature,omitempty"`
-	TopP                *float64        `json:"top_p,omitempty"`
-	N                   *int            `json:"n,omitempty"`
-	Stop                StopSequence    `json:"stop,omitempty"`
-	MaxTokens           *int            `json:"max_tokens,omitempty"`
-	MaxCompletionTokens *int            `json:"max_completion_tokens,omitempty"`
-	PresencePenalty     *float64        `json:"presence_penalty,omitempty"`
-	FrequencyPenalty    *float64        `json:"frequency_penalty,omitempty"`
-	LogitBias           LogitBias       `json:"logit_bias,omitempty"`
-	Seed                *int64          `json:"seed,omitempty"`
-	ResponseFormat      *ResponseFormat `json:"response_format,omitempty"`
-	User                string          `json:"user,omitempty"`
-	Tools               []ChatTool      `json:"tools,omitempty"`
-	ToolChoice          ToolChoice      `json:"tool_choice,omitempty"`
+	Model               string           `json:"model"`
+	Messages            []ChatMessage    `json:"messages"`
+	Stream              bool             `json:"stream,omitempty"`
+	StreamOptions       *StreamOptions   `json:"stream_options,omitempty"`
+	Temperature         *float64         `json:"temperature,omitempty"`
+	TopP                *float64         `json:"top_p,omitempty"`
+	N                   *int             `json:"n,omitempty"`
+	Stop                StopSequence     `json:"stop,omitempty"`
+	MaxTokens           *int             `json:"max_tokens,omitempty"`
+	MaxCompletionTokens *int             `json:"max_completion_tokens,omitempty"`
+	PresencePenalty     *float64         `json:"presence_penalty,omitempty"`
+	FrequencyPenalty    *float64         `json:"frequency_penalty,omitempty"`
+	LogitBias           LogitBias        `json:"logit_bias,omitempty"`
+	Seed                *int64           `json:"seed,omitempty"`
+	ResponseFormat      *ResponseFormat  `json:"response_format,omitempty"`
+	User                string           `json:"user,omitempty"`
+	Tools               []ChatTool       `json:"tools,omitempty"`
+	ToolChoice          ToolChoice       `json:"tool_choice,omitempty"`
+	Thinking            *ThinkingControl `json:"thinking,omitempty"`
 }
 
 func DecodeChatCompletionRequest(data []byte) (ChatCompletionRequest, error) {
@@ -357,6 +362,9 @@ func (request ChatCompletionRequest) invalidParam() string {
 	}
 	if request.ResponseFormat != nil && request.ResponseFormat.Type != ResponseFormatText && request.ResponseFormat.Type != ResponseFormatJSONObject {
 		return "response_format.type"
+	}
+	if request.Thinking != nil && request.Thinking.Type != "enabled" && request.Thinking.Type != "disabled" {
+		return "thinking.type"
 	}
 	return ""
 }
