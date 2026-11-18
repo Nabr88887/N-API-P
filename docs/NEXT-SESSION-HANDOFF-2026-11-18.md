@@ -125,22 +125,31 @@ rc.7 绑定源码 commit `c8f683a`。部署完成后，工作区出现了与本�
 investigation 功能改动；这些改动未被 rc.7 使用，必须保留并由后续任务单独审查。
 不要把它们包装成 rc.7，也不要擅自回滚。
 
-## 下一阶段
+## Gate H 当前状态
 
-Gate H 仍为 HOLD。当前决策包：
+用户已于 2026-11-19 确认最小首轮范围，批准记录为
+`GATE-H-PILOT-RC7-V1-20261119`，当前状态为 `APPROVED / UNUSED`：
 
-`deploy/GATE-H-PILOT-DECISION-RC7-2026-11-18.md`
+- 参与者：仅请求用户本人；
+- 窗口：`2026-11-19 10:00-12:00 Asia/Shanghai`；
+- 入口：仅本机 SSH 转发到 `127.0.0.1:18443`；
+- 数据：仅合成提示词和响应；
+- 监控和回滚负责人：请求用户本人；
+- 运行镜像：rc.7，回滚镜像：rc.6。
 
-在执行包创建前仍需确认：
+2026-11-19 00:00 的只读 preflight 已通过，当前本地 `18443` 没有监听，隧道未提前
+建立。执行入口：
 
-1. 参与者名单与团队范围；
-2. 精确开始/结束窗口；
-3. 内部入口、DNS 与证书确认；
-4. 监控负责人和回滚负责人；
-5. 员工通知与 key 发放流程。
+```powershell
+.\.venv\Scripts\python.exe -B .codex\gate_h_tunnel_20261119.py --preflight
+.\.venv\Scripts\python.exe -B .codex\gate_h_tunnel_20261119.py --start
+.\.venv\Scripts\python.exe -B .codex\gate_h_tunnel_20261119.py --status
+.\.venv\Scripts\python.exe -B .codex\gate_h_tunnel_20261119.py --stop
+```
 
-推荐的最小首轮为 1 名指定参与者、仅合成内容、最多两小时，并继续使用现有
-内部 HTTPS proxy；不得直接把 `18443` 发布到公网接口。
+`--start` 只允许在 `09:55-10:10` 运行；必须在 `12:00` 前或任一回滚条件出现时
+立即 `--stop`。不得直接把 `18443` 发布到公网接口，不得扩大参与者或使用真实
+员工内容。
 
 ## 禁止事项
 
