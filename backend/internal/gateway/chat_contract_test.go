@@ -153,6 +153,26 @@ func TestValidateChatCompletionResponseAcceptsAndRejectsTypedToolCalls(t *testin
 	}
 }
 
+func TestValidateChatCompletionResponseAcceptsNewAPIToolCallIndex(t *testing.T) {
+	body := []byte(`{"id":"chatcmpl-1","model":"deepseek-flash","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"x\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`)
+	ok, tokenUsage, finishReason := validateChatCompletionResponse(body)
+	if !ok || tokenUsage == nil || tokenUsage.InputTokens != 3 || tokenUsage.OutputTokens != 5 || tokenUsage.TotalTokens != 8 || finishReason != "tool_calls" {
+		t.Fatalf("validateChatCompletionResponse() = %v, %+v, %q", ok, tokenUsage, finishReason)
+	}
+}
+
+func TestValidateChatCompletionResponseRejectsMalformedToolCallIndex(t *testing.T) {
+	for _, body := range []string{
+		`{"id":"chatcmpl-1","model":"deepseek-flash","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"index":-1,"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`,
+		`{"id":"chatcmpl-1","model":"deepseek-flash","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"index":"0","id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`,
+		`{"id":"chatcmpl-1","model":"deepseek-flash","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"index":0,"id":"call_1","type":"function","future":true,"function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`,
+	} {
+		if ok, _, _ := validateChatCompletionResponse([]byte(body)); ok {
+			t.Fatalf("malformed tool call index accepted: %s", body)
+		}
+	}
+}
+
 func TestValidateChatCompletionResponseRejectsAmbiguousChoicesAndFinishReasons(t *testing.T) {
 	for _, test := range []struct {
 		name string

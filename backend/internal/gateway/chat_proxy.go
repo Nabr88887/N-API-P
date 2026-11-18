@@ -665,9 +665,9 @@ func validateChatCompletionResponse(data []byte) (bool, *usage.TokenUsage, strin
 			return false, nil, ""
 		}
 		var message struct {
-			Role      string          `json:"role"`
-			Content   json.RawMessage `json:"content"`
-			ToolCalls []ChatToolCall  `json:"tool_calls"`
+			Role      string                 `json:"role"`
+			Content   json.RawMessage        `json:"content"`
+			ToolCalls []chatResponseToolCall `json:"tool_calls"`
 		}
 		if rawMessage, ok := fields["message"]; !ok || !decodeUpstreamJSON(rawMessage, &message) || message.Role == "" {
 			return false, nil, ""
@@ -695,6 +695,38 @@ func validateChatCompletionResponse(data []byte) (bool, *usage.TokenUsage, strin
 		return false, nil, ""
 	}
 	return true, &usage.TokenUsage{InputTokens: envelope.Usage.PromptTokens, OutputTokens: envelope.Usage.CompletionTokens, TotalTokens: envelope.Usage.TotalTokens}, primaryFinishReason
+}
+
+type chatResponseToolCall struct {
+	Index    *int             `json:"index"`
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function ChatFunctionCall `json:"function"`
+}
+
+func (call *chatResponseToolCall) UnmarshalJSON(data []byte) error {
+	var decoded struct {
+		Index    *int             `json:"index"`
+		ID       string           `json:"id"`
+		Type     string           `json:"type"`
+		Function ChatFunctionCall `json:"function"`
+	}
+	if err := decodeJSON(data, &decoded, true); err != nil {
+		return err
+	}
+	if decoded.Index != nil && *decoded.Index < 0 {
+		return errors.New("invalid tool call index")
+	}
+	if decoded.Type != "function" || !validContractText(decoded.ID, true) || !validContractText(decoded.Function.Name, true) || !validJSONText(decoded.Function.Arguments) {
+		return errors.New("invalid tool call")
+	}
+	*call = chatResponseToolCall{
+		Index:    decoded.Index,
+		ID:       decoded.ID,
+		Type:     decoded.Type,
+		Function: decoded.Function,
+	}
+	return nil
 }
 
 func validResponseContent(content json.RawMessage) bool {
