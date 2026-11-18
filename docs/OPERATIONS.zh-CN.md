@@ -146,8 +146,10 @@ N-API-P 需要的是 NewAPI `令牌`管理中的项目 API token，不是账户�
 
 NewAPI 的正式版本、管理员认证方式和 token contract 必须以已安装 revision 的
 官方源码和批准的 operator-only 检查为准，不要根据页面上的泛称猜测令牌类型。
-rc.5 当前验收要求 N-API-P 到配置的内部 proxy 使用证书校验 HTTPS；proxy 到
+rc.7 当前验收要求 N-API-P 到配置的内部 proxy 使用证书校验 HTTPS；proxy 到
 stock NewAPI 的 HTTP 仅可位于已证明私有且未发布的 Docker bridge 网络上。
+rc.7 已于 2026-11-18 通过 Gate G，rc.6 保留为即时镜像回滚；员工入口和
+Gate H 仍未开放。
 
 ## 5. 日常管理
 
