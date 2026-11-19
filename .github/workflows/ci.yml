@@ -28,7 +28,7 @@ jobs:
             -e GOCACHE=/workspace/tmp/gocache \
             -e "GOSUMDB=sum.golang.org https://sum.golang.google.cn" \
             golang:1.25.12 \
-            sh -c "go test ./... && go vet ./... && go build -o /workspace/tmp/n-api-p ./cmd/n-api-p && go mod verify"
+            sh -c "go test ./... && go vet ./... && go build -buildvcs=false -o /workspace/tmp/n-api-p ./cmd/n-api-p && go mod verify"
 
   frontend:
     name: Frontend verification
