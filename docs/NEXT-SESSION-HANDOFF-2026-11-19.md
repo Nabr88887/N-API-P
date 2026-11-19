@@ -27,6 +27,14 @@
 的 personal-key 流量归属要求该身份恰好属于一个 active team。没有模型请求被
 发送到上游。
 
+随后批准了 V3 修复窗口 `2026-11-19 15:15-16:15 Asia/Shanghai`：
+
+- 仅通过管理员 UI 向当前唯一系统管理员添加现有唯一 active team 的 membership；
+- 保留该 membership；
+- 重新打开 loopback 隧道并运行一次同版 synthetic browser probe；
+- hidden scheduler PID `153540` 在 `15:10` 启动，`16:15` 自动关闭；
+- V3 预检通过，当前 `18443` 在 15:10 前关闭。
+
 ## 新会话先读
 
 1. `AGENTS.md`
