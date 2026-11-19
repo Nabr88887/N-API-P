@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>N-API-P | Enterprise AI Governance Gateway for NewAPI</title>
+  <meta name="description" content="N-API-P is a self-hosted OpenAI-compatible governance gateway for NewAPI with identity, model policy, cost attribution, rate limits, encrypted audit, and observability.">
+  <meta name="keywords" content="NewAPI, AI gateway, LLM gateway, AI governance, OpenAI-compatible, encrypted audit, cost attribution">
+  <meta property="og:title" content="N-API-P | Enterprise AI Governance Gateway">
+  <meta property="og:description" content="Self-hosted enterprise controls for NewAPI: identity, downstream keys, model policy, cost attribution, encrypted audit, and observability.">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="assets/social-preview.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="canonical" href="https://nabr88887.github.io/N-API-P/">
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="index.html">N-API-P</a>
+    <nav aria-label="Primary">
+      <a href="#architecture">Architecture</a>
+      <a href="#capabilities">Capabilities</a>
+      <a href="#start">Quick start</a>
+      <a href="https://github.com/Nabr88887/N-API-P">GitHub</a>
+      <a href="https://github.com/Nabr88887/N-API-P/blob/main/README.zh-CN.md">中文</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Open source · MIT License · Alpha</p>
+        <h1>Enterprise AI governance for NewAPI</h1>
+        <p class="lede">A self-hosted, OpenAI-compatible gateway that adds employee identity, downstream keys, model policy, cost attribution, encrypted audit, and operational visibility while keeping the upstream NewAPI credential on the server.</p>
+        <div class="actions">
+          <a class="primary" href="https://github.com/Nabr88887/N-API-P">View on GitHub</a>
+          <a href="https://github.com/Nabr88887/N-API-P/blob/main/docs/OPERATIONS.zh-CN.md">Operations guide</a>
+        </div>
+      </div>
+      <div class="hero-panel">
+        <p class="panel-label">Primary request path</p>
+        <ol>
+          <li>Authenticate a downstream employee or service-account key.</li>
+          <li>Apply model and request policy before upstream dispatch.</li>
+          <li>Call NewAPI with a server-side upstream credential.</li>
+          <li>Capture usage and encrypted audit evidence.</li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="architecture" id="architecture">
+      <div class="section-heading">
+        <p class="eyebrow">System boundary</p>
+        <h2>Separate enterprise governance from upstream model access</h2>
+        <p>N-API-P does not replace NewAPI or read its database. It creates a governed enterprise boundary through the upstream API contract.</p>
+      </div>
+      <a class="diagram" href="assets/n-api-p-architecture.html">
+        <img src="assets/social-preview.png" alt="N-API-P architecture: clients connect through N-API-P to NewAPI, while PostgreSQL stores metadata and encrypted audit records.">
+        <span>Open interactive architecture diagram</span>
+      </a>
+    </section>
+
+    <section class="capabilities" id="capabilities">
+      <div class="section-heading">
+        <p class="eyebrow">Governance controls</p>
+        <h2>One place for access, cost, and audit evidence</h2>
+      </div>
+      <div class="grid">
+        <article>
+          <h3>Identity and roles</h3>
+          <p>Invite-only accounts, server-side sessions, role boundaries, sensitive-action reauthentication, and controlled recovery.</p>
+        </article>
+        <article>
+          <h3>Keys and model policy</h3>
+          <p>Personal API keys, team-owned service-account keys, hashed storage, revocation, and a permission-filtered model allowlist.</p>
+        </article>
+        <article>
+          <h3>Usage and cost</h3>
+          <p>Upstream-reported token usage, immutable price snapshots, employee/team attribution, and explicit unknown values when usage is absent.</p>
+        </article>
+        <article>
+          <h3>Encrypted audit</h3>
+          <p>Application-encrypted request and response content, bounded retention, expiry, and purpose-bound administrator review.</p>
+        </article>
+        <article>
+          <h3>Fail-closed boundary</h3>
+          <p>New traffic is not forwarded when audit prerequisites are unavailable. The audit boundary remains part of the data path.</p>
+        </article>
+        <article>
+          <h3>Operations</h3>
+          <p>Content-free logs, Prometheus metrics, health endpoints, Docker health state, backup boundaries, and rollback documentation.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="start" id="start">
+      <div>
+        <p class="eyebrow">Synthetic demo</p>
+        <h2>Run the local gateway without a real NewAPI account</h2>
+        <p>The demo generates local credentials and uses a NewAPI-compatible mock plus synthetic data.</p>
+      </div>
+      <pre><code>git clone https://github.com/Nabr88887/N-API-P.git
+cd N-API-P
+.\local-demo\start.ps1</code></pre>
+    </section>
+
+    <section class="status">
+      <div>
+        <p class="eyebrow">Project status</p>
+        <h2>Alpha and deliberately bounded</h2>
+      </div>
+      <p>N-API-P is intended for learning, research, evaluation, and controlled pilots. It has not been independently assessed for production use. See the repository security policy before exposing any deployment.</p>
+    </section>
+  </main>
+
+  <footer>
+    <span>N-API-P · University of South China graduation design</span>
+    <span><a href="https://github.com/Nabr88887/N-API-P">Source</a> · <a href="https://github.com/Nabr88887/N-API-P/blob/main/LICENSE">MIT License</a></span>
+  </footer>
+</body>
+</html>

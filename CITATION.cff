@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use N-API-P in research or teaching, cite this repository."
+title: "N-API-P: Enterprise AI Governance Gateway for NewAPI"
+abstract: "A self-hosted, OpenAI-compatible governance gateway that adds enterprise identity, downstream credentials, model policy, usage attribution, encrypted audit, and operational controls around NewAPI."
+type: software
+authors:
+  - family-names: "伍"
+    given-names: "文旭"
+    affiliation: "University of South China"
+repository-code: "https://github.com/Nabr88887/N-API-P"
+url: "https://nabr88887.github.io/N-API-P/"
+license: MIT
+keywords:
+  - AI governance
+  - AI gateway
+  - LLM gateway
+  - NewAPI
+  - OpenAI-compatible
+  - encrypted audit
+  - cost attribution
+version: "0.1.0"
+date-released: "2026-11-19"

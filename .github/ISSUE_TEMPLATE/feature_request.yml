@@ -1,0 +1,32 @@
+name: Feature request
+description: Propose a focused improvement to governance, reliability, or usability.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the user need or governance gap, not only the desired UI.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful change and its acceptance criteria.
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Security, data, and migration impact
+      description: Explain effects on identities, keys, audit, retention, APIs, or deployment.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Include simpler alternatives, reused components, or reasons not to build.

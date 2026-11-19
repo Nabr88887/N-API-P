@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/Nabr88887/N-API-P/security/advisories/new
+    about: Report vulnerabilities privately. Do not include secrets in a public issue.
+  - name: Project documentation
+    url: https://nabr88887.github.io/N-API-P/
+    about: Read setup, architecture, and governance documentation.

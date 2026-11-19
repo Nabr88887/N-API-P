@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "N-API-P Enterprise AI Governance Gateway",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "viewBox": [1200, 720],
+    "repository": {
+      "url": "https://github.com/Nabr88887/N-API-P",
+      "revision": "83a0692f33a3c4c114f0979331a727660898bcd0"
+    }
+  },
+  "components": [
+    {
+      "id": "client",
+      "type": "frontend",
+      "label": "OpenAI-compatible client",
+      "sublabel": "Employee or service account",
+      "pos": [40, 320],
+      "size": [190, 76]
+    },
+    {
+      "id": "admin",
+      "type": "frontend",
+      "label": "Administration UI",
+      "sublabel": "Embedded React portal",
+      "pos": [40, 150],
+      "size": [190, 76]
+    },
+    {
+      "id": "gateway",
+      "type": "backend",
+      "label": "N-API-P",
+      "sublabel": "Go modular monolith",
+      "tag": "Policy + audit boundary",
+      "pos": [340, 200],
+      "size": [300, 180],
+      "sources": [
+        {
+          "path": "README.md",
+          "line": 1,
+          "label": "project overview"
+        }
+      ]
+    },
+    {
+      "id": "newapi",
+      "type": "cloud",
+      "label": "NewAPI",
+      "sublabel": "Server-side upstream token",
+      "pos": [790, 250],
+      "size": [200, 86]
+    },
+    {
+      "id": "providers",
+      "type": "external",
+      "label": "Model providers",
+      "sublabel": "Multi-vendor model access",
+      "pos": [1030, 250],
+      "size": [140, 86]
+    },
+    {
+      "id": "postgres",
+      "type": "database",
+      "label": "PostgreSQL",
+      "sublabel": "Metadata + encrypted audit",
+      "pos": [370, 500],
+      "size": [240, 84],
+      "sources": [
+        {
+          "path": "docs/OPERATIONS.zh-CN.md",
+          "line": 1,
+          "label": "operations guide"
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "security-group",
+      "label": "Private internal boundary",
+      "wraps": ["gateway", "postgres"],
+      "pad": 30
+    }
+  ],
+  "connections": [
+    {
+      "id": "client-api",
+      "from": "client",
+      "to": "gateway",
+      "label": "OpenAI-compatible HTTPS",
+      "variant": "emphasis",
+      "labelAt": [285, 410]
+    },
+    {
+      "id": "admin-portal",
+      "from": "admin",
+      "to": "gateway",
+      "label": "Authenticated portal"
+    },
+    {
+      "id": "gateway-upstream",
+      "from": "gateway",
+      "to": "newapi",
+      "label": "Protected upstream call",
+      "variant": "security"
+    },
+    {
+      "id": "newapi-models",
+      "from": "newapi",
+      "to": "providers"
+    },
+    {
+      "id": "gateway-data",
+      "from": "gateway",
+      "to": "postgres",
+      "label": "Usage + encrypted audit",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 24
+    }
+  ]
+}
