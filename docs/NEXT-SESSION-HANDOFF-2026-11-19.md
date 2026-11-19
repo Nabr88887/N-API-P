@@ -32,8 +32,10 @@
 - 仅通过管理员 UI 向当前唯一系统管理员添加现有唯一 active team 的 membership；
 - 保留该 membership；
 - 重新打开 loopback 隧道并运行一次同版 synthetic browser probe；
-- hidden scheduler PID `153540` 在 `15:10` 启动，`16:15` 自动关闭；
-- V3 预检通过，当前 `18443` 在 15:10 前关闭。
+- 首次 hidden scheduler PID `153540` 在本地启动前失败，没有产生 attempt marker；
+- V3 runner 已手动成功启动 loopback tunnel PID `154116`；
+- stop-only scheduler PID `156040` 将在 `16:15` 自动关闭；
+- Liveness、readiness 和未认证 API 拒绝检查通过。
 
 ## 新会话先读
 
