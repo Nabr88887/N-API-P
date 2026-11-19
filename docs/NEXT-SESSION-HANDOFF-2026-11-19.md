@@ -12,13 +12,20 @@
 - 本地 `18443` 已确认关闭，没有 Gate H attempt/state/result 文件。
 - 员工入口、Pilot 和 Gate H 对外状态仍为关闭。
 
-后续在同一天已批准替代窗口 `GATE-H-PILOT-RC7-V2-20261119`：
+后续在同一天批准了替代窗口 `GATE-H-PILOT-RC7-V2-20261119`，但该尝试已
+`FAILED / CONSUMED`：
 
 - 参与者：仅请求用户本人；
 - 窗口：`2026-11-19 14:30-16:30 Asia/Shanghai`；
 - 入口：本机 SSH 转发到 `127.0.0.1:18443`；
 - 数据：仅合成内容；
-- 隐藏本地调度器 PID `143144` 在 `14:25` 启动隧道，`16:30` 自动关闭。
+- 隧道在 `14:25` 启动，首次 `/v1/models` 请求返回 401；操作者在 `14:37`
+  关闭隧道和调度器。
+- 临时 Personal API Key 已自动撤销，撤销后请求返回 401。
+
+根因已确认：唯一 active 系统管理员没有任何 active team membership，而 gateway
+的 personal-key 流量归属要求该身份恰好属于一个 active team。没有模型请求被
+发送到上游。
 
 ## 新会话先读
 
@@ -58,6 +65,15 @@
   **CANCELLED / UNUSED / NOT STARTED**，不得明天复用。
 
 ## 明天第一工作包
+
+在重新运行 Gate H 前先处理 2026-11-19 的 401：
+
+1. 通过已有的系统管理员 `People & teams` 管理路径，为当前唯一系统管理员添加
+   现有唯一 active team 的成员关系；这是新的数据变更，需要单独明确批准。
+2. 不得直接修改数据库。
+3. 读回验证该身份恰好有一个 active team，其他身份/团队不变。
+4. 创建新的 V3 隧道窗口与 fresh runner pins，不得重放 V2。
+5. 再运行一次合成模型、SSE、Flash tool 和 key cleanup 探针。
 
 1. 核对 Git、worktree 所有权、rc.7 运行摘要、health、schema 9、
    companions 和 loopback ingress。
