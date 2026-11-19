@@ -1,152 +1,97 @@
-# 2026-11-19 暂停交接：Gate H 已批准但未启动
+# 2026-11-19 交接：Gate H V3 通过
 
 > 本文件是公开、脱敏交接。精确 SSH、凭据、密码窗口和完整证据只保存在 Git
 > 忽略的 `.codex/`，不得复制到本文件。
 
 ## 当前结论
 
-- 2026-11-19 00:05 Asia/Shanghai，用户因急事要求暂停。
-- rc.7 继续正常运行，Gate G 已完成。
-- Gate H 的 2026-11-19 单参与者、仅循环隧道、仅合成数据窗口已批准，但在启动
-  前被取消，**没有建立隧道，没有 Pilot 流量**。
-- 本地 `18443` 已确认关闭，没有 Gate H attempt/state/result 文件。
-- 员工入口、Pilot 和 Gate H 对外状态仍为关闭。
-
-后续在同一天批准了替代窗口 `GATE-H-PILOT-RC7-V2-20261119`，但该尝试已
-`FAILED / CONSUMED`：
-
-- 参与者：仅请求用户本人；
-- 窗口：`2026-11-19 14:30-16:30 Asia/Shanghai`；
-- 入口：本机 SSH 转发到 `127.0.0.1:18443`；
-- 数据：仅合成内容；
-- 隧道在 `14:25` 启动，首次 `/v1/models` 请求返回 401；操作者在 `14:37`
-  关闭隧道和调度器。
-- 临时 Personal API Key 已自动撤销，撤销后请求返回 401。
-
-根因已确认：唯一 active 系统管理员没有任何 active team membership，而 gateway
-的 personal-key 流量归属要求该身份恰好属于一个 active team。没有模型请求被
-发送到上游。
-
-随后批准了 V3 修复窗口 `2026-11-19 15:15-16:15 Asia/Shanghai`：
-
-- 仅通过管理员 UI 向当前唯一系统管理员添加现有唯一 active team 的 membership；
-- 保留该 membership；
-- 重新打开 loopback 隧道并运行一次同版 synthetic browser probe；
-- 首次 hidden scheduler PID `153540` 在本地启动前失败，没有产生 attempt marker；
-- V3 runner 已手动成功启动 loopback tunnel PID `154116`；
-- stop-only scheduler PID `156040` 将在 `16:15` 自动关闭；
-- Liveness、readiness 和未认证 API 拒绝检查通过。
+- rc.7 正常运行，Gate G 已通过。
+- 单参与者、仅合成内容的 Gate H V3 已通过。
+- 本地 loopback tunnel 已关闭，`127.0.0.1:18443` 不再监听。
+- 当前系统管理员的唯一 active team membership 已添加并保留。
+- 员工范围内更大入口、更多参与者和 Pilot 扩量仍未获批。
 
 ## 新会话先读
 
 1. `AGENTS.md`
-2. `docs/NEXT-SESSION-HANDOFF-2026-11-16.md`
-3. `.codex/PROJECT_GOAL.md`
-4. `.codex/STATUS.md`
-5. `.codex/PROJECT_PLAN.md`
-6. `.codex/handoff.md`
-7. `.codex/APPROVALS.md`
-8. 本文件
+2. `.codex/PROJECT_GOAL.md`
+3. `.codex/STATUS.md`
+4. `.codex/PROJECT_PLAN.md`
+5. `.codex/handoff.md`
+6. `.codex/APPROVALS.md`
+7. 本文件
 
 ## 固定运行身份
 
+- Application source：
+  `c8f683ab9785c6eefc5caa071b135ed1ac227af7`
 - Running App：`0.1.0-rc.7`
   `sha256:3e2515b926e607152bcc9126c10f747cec023599e04e025be29cd3fbcd1946cb`
-- Source commit：`c8f683ab9785c6eefc5caa071b135ed1ac227af7`
 - Rollback App：`0.1.0-rc.6`
   `sha256:ada8b2bc3b876ed1bc64ee3d83d5bb464699bbd6197bc95e88bd8f1105139ea8`
-- Database：`n_api_p`，schema 9，18 张 public 表
-- Current ingress：server proxy 仅监听 `127.0.0.1:18443`
-- Current local tunnel：未运行
+- Database：schema 9，18 张 public 表
 - Token 5 expiry：`2026-11-20 18:31:37 Asia/Shanghai`
 
-## 今天完成的事项
+## Gate H V3 结果
 
-- rc.7 已正式部署并通过独立 verify。
-- Gate G V8 完整通过：Pro 非流式、Pro SSE、Flash tool、usage、3 条加密审计、
-  content-free logs/metrics、清理和 key rejection。
-- 新增 rc.7 Gate H 决策包：
-  `deploy/GATE-H-PILOT-DECISION-RC7-2026-11-18.md`
-- 用户确认最小首轮范围后，新增批准
-  `GATE-H-PILOT-RC7-V1-20261119` 和本地 tunnel runner：
-  `.codex/gate_h_tunnel_20261119.py`。
-- tunnel runner 4/4 tests 通过；只读 preflight 通过；未提前启动。
-- 用户暂停后，该批准已封存为
-  **CANCELLED / UNUSED / NOT STARTED**，不得明天复用。
+浏览器探针最终结果：
 
-## 明天第一工作包
+```json
+{"ok":true,"stage":"complete","models_verified":true,"nonstream_verified":true,"sse_verified":true,"tool_verified":true,"key_revoked":true,"key_rejected_after_cleanup":true,"secret_value_returned":false,"prompt_values_returned":false,"response_values_returned":false}
+```
 
-在重新运行 Gate H 前先处理 2026-11-19 的 401：
+控制台中出现的 401 是 key 撤销后的预期拒绝测试；探针整体为成功。
 
-1. 通过已有的系统管理员 `People & teams` 管理路径，为当前唯一系统管理员添加
-   现有唯一 active team 的成员关系；这是新的数据变更，需要单独明确批准。
-2. 不得直接修改数据库。
-3. 读回验证该身份恰好有一个 active team，其他身份/团队不变。
-4. 创建新的 V3 隧道窗口与 fresh runner pins，不得重放 V2。
-5. 再运行一次合成模型、SSE、Flash tool 和 key cleanup 探针。
+数据库 content-free 验证：
 
-1. 核对 Git、worktree 所有权、rc.7 运行摘要、health、schema 9、
-   companions 和 loopback ingress。
-2. 核对本地 `18443` 仍关闭，且不存在 Gate H attempt/state/result。
-3. 核对 Token 5 剩余有效期。**Token 5 将在 2026-11-20 18:31:37 到期。**
-4. 在以下两种路径中先作明确选择：
-   - 新的短 Gate H 窗口，必须在 Token 5 到期前留出足够收尾和回滚余量；
-   - 或先走独立的 Token 5 轮换批准，再进行 Gate H。
-5. 新 gate H 必须使用新的日期、窗口、批准 ID 和 runner hash；不能修改或复用
-   2026-11-19 的取消批准。
-6. 保持首轮最小范围：1 名指定参与者、仅合成内容、最多 2 小时、
-   SSH loopback tunnel、无公网 listener。
+- active system-administrator memberships：1；
+- 最近临时 Personal Keys：2，均已 revoked；
+- complete HTTP-200 success audits：3；
+- finish reasons：2 个 `stop`、1 个 `tool_calls`；
+- encrypted raw rows：3 request、3 response；
+- usage records：3，全部 token totals 有效；
+- 没有返回 prompt、response、key 或数据库行值。
 
-## 下一阶段规划
+## 已完成处置
 
-### H0 - 新窗口 readiness
-
-- 只读检查 rc.7、DB schema、恢复点年龄、Token 有效期和本地端口状态。
-- 确认 rc.6 回滚镜像仍存在。
-- 明确参与者、时间窗、监控负责人和回滚负责人。
-
-### H1 - 单参与者 Pilot
-
-- 只在获批时间窗启动本机 SSH 隧道。
-- 参与者仅使用现有门户和合成内容。
-- 监控错误率、延迟、审计完整性、usage、readiness、资源使用和日志安全。
-- 任一红线立即关闭隧道；应用故障时才考虑 rc.6 回滚。
-
-### H2 - 收尾
-
-- 关闭隧道并确认 `18443` 不再监听。
-- 撤销不再需要的 pilot Personal API Key。
-- 保留合成 usage/audit metadata 和 content-free 结果。
-- 记录 `go`、`hold` 或 `rollback`。
-- 任何扩人员、扩时间或真实数据都需要新批准。
+- 首次自动 scheduler 在启动前失败，没有产生 attempt marker。
+- V3 runner 手动启动成功，liveness/readiness/未认证拒绝均通过。
+- 测试完成后手动关闭 tunnel 和 stop scheduler。
+- Personal API Key 已撤销并验证拒绝访问。
+- administrator membership 已按批准保留。
 
 ## 关键证据
 
-- 部署结果：`.codex/deploy_candidate_rc7_20261118.result.json`
-- Gate G V8：`.codex/gate_g_full_gateway_v8_20261118.result.json`
-- Gate H readiness：
-  `.codex/gate_h_readiness_preflight_20261118.result.json`
-- 已取消的 Gate H runner：
-  `.codex/gate_h_tunnel_20261119.py`
-- 决策包：
-  `deploy/GATE-H-PILOT-DECISION-RC7-2026-11-18.md`
+- V3 probe：
+  `.codex/gate_h_v3_probe_result_20261119.json`
+- V3 tunnel stop：
+  `.codex/gate_h_tunnel_v3_20261119.result.json`
+- V3 database verification：
+  `.codex/gate_h_v3_database_verification_20261119.json`
+- Gate G V8：
+  `.codex/gate_g_full_gateway_v8_20261118.result.json`
+- rc.7 deployment：
+  `.codex/deploy_candidate_rc7_20261118.result.json`
 
-## 不得重放/不得沿用
+## 不得重放
 
-- `GATE-H-PILOT-RC7-V1-20261119` 已取消，不得直接运行 `--start`。
-- Gate G V1-V8、rc.5/6/7 deployment、V6 backup、V9 restore 均已 consumed。
+- Gate H V1 已取消未使用。
+- Gate H V2 失败并 consumed。
+- Gate H V3 通过并 consumed。
+- Gate G V1-V8、rc.5/6/7 deployment、V6 backup、V9 restore 均 consumed。
 - 不删除或重写 attempt marker、receipt 或 result。
+
+## 下一阶段
+
+扩量需要新的明确决策：
+
+1. 判断单人 Gate H 证据是否足够；
+2. 定义下一批参与者与观察窗口；
+3. 定义内部 HTTPS 入口、监控负责人和回滚负责人；
+4. 在 Token 5 到期前决定继续使用还是轮换；
+5. 创建新的批准、runner/package 和恢复边界。
 
 ## 工作区提醒
 
-暂停时仍存在用户未跟踪的 `prompts/`；并发或外部工作区活动还可能临时出现
-investigation 功能修改。rc.7 镜像绑定 source `c8f683a`。新会话不要提交
-`prompts/`，也不要提交或回滚这些未审查改动，必须单独核对所有权和目的。
-
-## 禁止事项
-
-- 未取得新窗口批准前，不建立隧道、不开放员工入口、不启动 Pilot。
-- 不把 `18443` 发布到公网接口。
-- 不操作 NewAPI 数据库或修改账号/邮箱。
-- 不输出 token、密码、DSN、audit key、员工提示词或响应。
-- 不做 live restore、down/force migration、volume 删除或通用 Docker prune。
+用户未跟踪的 `prompts/` 和并发 investigation 改动可能仍存在；它们不属于
+rc.7 发布内容，必须保留并单独审查，不要擅自回滚或提交。

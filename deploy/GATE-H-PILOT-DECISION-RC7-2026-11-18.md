@@ -1,12 +1,12 @@
 # Gate H Small-Group Pilot Decision - rc.7
 
-Status: **PREPARED / HOLD / NOT AUTHORIZED**
+Status: **EXECUTED / PASSED on 2026-11-19**
 
 Date: 2026-11-18 Asia/Shanghai
 
-This document prepares the smallest reversible internal pilot possible. It
-does not open ingress, start pilot traffic, create an employee identity, issue
-a key, or use real employee content.
+The approved single-participant, synthetic-only pilot was executed through the
+loopback tunnel and passed. The temporary key was revoked, the tunnel is
+closed, and the single administrator-team membership was retained as approved.
 
 ## Current prerequisites
 

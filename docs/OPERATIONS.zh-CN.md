@@ -149,7 +149,8 @@ NewAPI 的正式版本、管理员认证方式和 token contract 必须以已安
 rc.7 当前验收要求 N-API-P 到配置的内部 proxy 使用证书校验 HTTPS；proxy 到
 stock NewAPI 的 HTTP 仅可位于已证明私有且未发布的 Docker bridge 网络上。
 rc.7 已于 2026-11-18 通过 Gate G，rc.6 保留为即时镜像回滚；员工入口和
-Gate H 仍未开放。
+Gate H 的 2026-11-19 单参与者、仅合成内容 loopback 试点已通过；更广员工入口
+和 Pilot 扩量仍未开放。
 
 ## 5. 日常管理
 
