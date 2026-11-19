@@ -5,7 +5,7 @@
 [English](README.md) | [简体中文](README.zh-CN.md) | [在线文档](https://nabr88887.github.io/N-API-P/)
 
 [![CI](https://github.com/Nabr88887/N-API-P/actions/workflows/ci.yml/badge.svg)](https://github.com/Nabr88887/N-API-P/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/Nabr88887/N-API-P?display_name=tag)](https://github.com/Nabr88887/N-API-P/releases)
+[![Release: v0.1.0 pre-release](https://img.shields.io/badge/version-0.1.0--pre.1-0B7A75)](https://github.com/Nabr88887/N-API-P/releases/tag/v0.1.0)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Go 1.25](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](backend/go.mod)
 [![React 19](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111)](frontend/package.json)
